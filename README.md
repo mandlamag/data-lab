@@ -21,11 +21,6 @@ To run your own infrastructure, you'll also need:
 > [!TIP]
 > Most workflows are saved as [just](https://just.systems/man/en/) commands, which are available after you install `uv` dependencies and load the virtual environment. Run `just -l` to list all available commands (more details below).
 
-> [!NOTE]
-> *The following is no longer required, and will be updated and tested soon:*
->
-> We rely on the official [duckdb/dbt-duckdb](https://github.com/duckdb/dbt-duckdb) adapter to connect to DuckLake. At this time, the latest stable version of the adapter does not support attaching the external DuckLake catalog with the `DATA_PATH` option and S3 credentials, but there is [PR #564](https://github.com/duckdb/dbt-duckdb/issues/564) that solves this, so we're using what is, at this point, unreleased code (see the [dbt-duckdb](pyproject.toml#L16) dependency and the corresponding entry under [[tools.uv.sources]](pyproject.toml#L37) in the [pyproject.toml](pyproject.toml) file).
-
 ## 🚀 Quick Start
 
 First create your own `.env` file from the provided example:
@@ -37,8 +32,8 @@ cp .env.example .env
 Make sure you fill-in the S3 configuration for:
 
 ```bash
-S3_ACCESS_KEY_ID=minio_username
-S3_SECRET_ACCESS_KEY=minio_password
+S3_ACCESS_KEY_ID=your_access_key
+S3_SECRET_ACCESS_KEY=your_secret_key
 ```
 
 You can then activate `just` and `dlctl` via:
@@ -177,7 +172,7 @@ Implements a 4-layer infrastructure architecture to help you deploy a data stack
 ![Infrastructure Architecture](./docs/infra-architecture.png)
 
 - Layer 1 (`foundation/`) is a Terraform project that will provision object storage (MinIO/RustFS) on an LXC running on Proxmox.
-- Layer 2 (`platform/`) is a Terraform project, with state storage on MinIO, that will provision three Docker VMs and a GitLab VM. GitLab will provide a container registry and come preconfigured with a GitLab Runner that executes on top of one of the Docker VMs.
+- Layer 2 (`platform/`) is a Terraform project, with state storage on the object store from Layer 1, that will provision three Docker VMs and a GitLab VM. GitLab will provide a container registry and come preconfigured with a GitLab Runner that executes on top of one of the Docker VMs.
 - Layer 3 (`services/`) contains a Terraform project (`gitlab/`) to optionally initialize CI/CD variables/secrets from the local `.env`, and a Docker Compose project (`docker/`) to provision the data stack services.
 - Layer 4 (`applications/`) contains local application deployments via Dockerized services (e.g., `ml.server`) and CI/CD integration to provision the required resources (e.g., postgres database and credentials).
 
@@ -187,9 +182,9 @@ Helps manage ingestion from difference data sources, creating the proper directo
 
 ### transform/
 
-This is the core of the data lakehouse, using [dbt](https://docs.getdbt.com/) to transform raw data into usable data, with [DuckLake](https://ducklake.select/) as the underlying catalog, running on top of SQLite.
+This is the core of the data lakehouse, using [dbt](https://docs.getdbt.com/) to transform raw data into usable data, with [DuckLake](https://ducklake.select/) as the underlying catalog backed by PostgreSQL. Data follows a **medallion architecture**: bronze (stage) → silver (enriched) → gold (marts).
 
-We purposely keep this simple with SQLite, using a backup/restore strategy to/from S3, as this assumes exploratory lab work, but you can easily replace [SQLite](https://ducklake.select/docs/stable/duckdb/usage/choosing_a_catalog_database#sqlite) with a [PostgreSQL](https://ducklake.select/docs/stable/duckdb/usage/choosing_a_catalog_database#postgresql) node, if you prefer.
+The dbt models are organized under `transform/models/` into `stage/` (bronze), `silver/`, and `marts/` (gold) layers, each backed by its own DuckLake catalog with data stored in S3.
 
 ### export/
 
@@ -227,7 +222,7 @@ Individual Bash or Python scripts for generic tasks (e.g., launching KùzuDB Exp
 
 ### local/
 
-Untracked directory where all your local files will live. This includes the engine database (DuckDB) and the DuckLake catalogs (e.g., `stage.sqlite`, `marts/graphs.sqlite`), which you can restore from a [backup](#backup), or create from scratch. KùzuDB databases will also live here, under `graphs/`, as well as the `init.sql` script for CLI access to the lakehouse.
+Untracked directory where all your local files will live. This includes the DuckDB engine database (`engine.duckdb`), which you can restore from a [backup](#backup) or create from scratch. KùzuDB databases will also live here, under `graphs/`, as well as the `init.sql` script for CLI access to the lakehouse. DuckLake catalog metadata is stored in PostgreSQL (not locally).
 
 
 ## 🗃️ Storage Layout
@@ -285,8 +280,8 @@ This will also support the generation of an `init.sql` file, which contains the 
 S3_ENDPOINT=localhost:9000
 S3_USE_SSL=false
 S3_URL_STYLE=path
-S3_ACCESS_KEY_ID=minio_username
-S3_SECRET_ACCESS_KEY=minio_password
+S3_ACCESS_KEY_ID=your_access_key
+S3_SECRET_ACCESS_KEY=your_secret_key
 S3_REGION=eu-west-1
 ```
 
@@ -322,13 +317,20 @@ You can use the defaults here. Everything will live under the `S3_BUCKET`. Each 
 
 ```bash
 ENGINE_DB=engine.duckdb
-STAGE_DB=stage.sqlite
-SECURE_STAGE_DB=secure_stage.sqlite
-GRAPHS_MART_DB=marts/graphs.sqlite
-ANALYTICS_MART_DB=marts/analytics.sqlite
+
+PSQL_CATALOG_HOST=docker-shared
+PSQL_CATALOG_PORT=5432
+PSQL_CATALOG_DB=lakehouse
+PSQL_CATALOG_USER=lakehouse
+PSQL_CATALOG_PASSWORD=lakehouse
+PSQL_CATALOG_STAGE_SCHEMA=stage
+PSQL_CATALOG_SILVER_SCHEMA=silver
+PSQL_CATALOG_SECURE_STAGE_SCHEMA=secure_stage
+PSQL_CATALOG_GRAPHS_MART_SCHEMA=graphs
+PSQL_CATALOG_ANALYTICS_MART_SCHEMA=analytics
 ```
 
-These files will live under `local/`. The DuckDB `ENGINE_DB` will be leveraged for querying. All data is tracked on the `STAGE_DB` and `*_MART_DB` catalog databases and stored on the corresponding object storage locations, as shown in the previous section. You can also used `SECURE_STAGE_DB` if you need to encrypt your data (e.g., for sensitive user data).
+The DuckDB `ENGINE_DB` lives under `local/` and is used for querying. DuckLake catalog metadata is stored in PostgreSQL, with one schema per catalog layer (stage, silver, graphs, analytics). All data is stored in S3 at the corresponding prefixes. `SECURE_STAGE` can be used if you need to encrypt your data (e.g., for sensitive user data).
 
 #### Kuzu Configurations
 
@@ -483,10 +485,7 @@ dlctl export prune
 
 ### Backup
 
-Since we rely on embedded databases and S3 object storage, we need to backup our databases.
-
-> [!IMPORTANT]
-> Data Lab was designed to be used in an education or research environment, so it currently doesn't support concurrent users. This could easily be added, though, as DuckLake supports PostgreSQL catalogs in place of SQLite, which we are using here.
+Since we rely on S3 object storage and PostgreSQL for DuckLake catalog metadata, we provide backup/restore utilities for the local DuckDB engine database.
 
 #### Create
 
