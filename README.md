@@ -23,54 +23,107 @@ To run your own infrastructure, you'll also need:
 
 ## 🚀 Quick Start
 
-First create your own `.env` file from the provided example:
+### 1. Prerequisites
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and [Docker Desktop](https://docs.docker.com/desktop/setup/install/mac-install/):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Optionally install the [DuckDB CLI](https://duckdb.org/docs/installation/) for direct lakehouse access:
+
+```bash
+brew install duckdb
+```
+
+### 2. Clone and install
+
+```bash
+git clone git@github.com:mandlamag/data-lab.git
+cd data-lab
+uv sync
+source .venv/bin/activate
+```
+
+### 3. Configure environment
 
 ```bash
 cp .env.example .env
 ```
 
-Make sure you fill-in the S3 configuration for:
+Edit `.env` — for **local development**, update these values:
 
 ```bash
-S3_ACCESS_KEY_ID=your_access_key
-S3_SECRET_ACCESS_KEY=your_secret_key
+# Point to localhost (Docker runs locally, not on a remote VM)
+S3_ENDPOINT=localhost:9000
+PSQL_CATALOG_HOST=localhost
+MLFLOW_TRACKING_URI=http://localhost:5000
+KAFKA_BROKER_ENDPOINT=localhost:9092
+
+# Set your S3 credentials (these become your RustFS admin login)
+S3_ACCESS_KEY_ID=admin
+S3_SECRET_ACCESS_KEY=supersecret
 ```
 
-You can then activate `just` and `dlctl` via:
+> [!TIP]
+> If you're having trouble connecting to your S3-compatible store, make sure you're using the correct zone, which you set via the `S3_REGION` variable in `.env`.
+
+### 4. Start all services
+
+Spin up the full local infrastructure (RustFS, PostgreSQL, Ollama, Open WebUI, MLflow, Kafka, Portainer):
 
 ```bash
-uv sync
-source .venv/bin/activate
+just infra-provision-local
 ```
 
-You can then setup the RustFS service as follows (it will use your env vars):
+Or start just the S3 store if that's all you need:
 
 ```bash
 docker compose -p datalab -f infra/services/docker/compose.yml \
     --profile dev up rustfs rustfs-init -d
 ```
 
-Or you can spin up the whole infrastructure locally, after Docker is running, by using:
+Wait for all services to be healthy:
 
 ```bash
-just infra-provision-local
+docker compose -p datalab -f infra/services/docker/compose.yml --profile dev ps
 ```
 
-> [!TIP]
-> If you're having trouble connecting to your S3-compatible store, make sure you're using the correct zone, which you set via the `S3_REGION` variable in `.env`.
+### 5. Provision PostgreSQL for DuckLake
 
-You should also generate the `init.sql` file, so you can easily connect to your DuckLake from the CLI as well:
+DuckLake uses PostgreSQL to store catalog metadata. Run this once to create the database and user:
 
 ```bash
-dlctl tools generate-init-sql
-duckdb -init local/init.sql local/engine.duckdb
+docker exec datalab-postgres-1 psql -U root -c "CREATE USER lakehouse WITH PASSWORD 'lakehouse';"
+docker exec datalab-postgres-1 psql -U root -c "CREATE DATABASE lakehouse;"
+docker exec datalab-postgres-1 psql -U root -c "GRANT ALL PRIVILEGES ON DATABASE lakehouse TO lakehouse;"
+docker exec datalab-postgres-1 psql -U root -c "ALTER DATABASE lakehouse OWNER TO lakehouse;"
 ```
 
-Or simply run the following command whenever you want to access your DuckLake, which will take care of the setup process for you:
+> [!NOTE]
+> This step is automated via CI/CD on the on-premise infrastructure, but needs to be done manually for local development. You only need to run it once.
+
+### 6. Verify lakehouse connection
+
+Generate the `init.sql` and open the DuckLake REPL:
 
 ```bash
 just lakehouse
 ```
+
+You should see a DuckDB REPL with all catalogs attached (stage, silver, graphs, analytics). Type `.quit` to exit.
+
+### 7. Service URLs
+
+Once everything is running, you can access:
+
+| Service | URL |
+|---------|-----|
+| RustFS Console | http://localhost:9001 |
+| MLflow | http://localhost:5000 |
+| Open WebUI (Ollama) | http://localhost:8080 |
+| Portainer | http://localhost:9080 |
 
 The general workflow you're expected to follow for data engineering is illustrated in the following diagram:
 
