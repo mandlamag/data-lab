@@ -1,0 +1,22 @@
+version: 2
+
+models:
+  - name: nodes_transactions
+    description: >
+      Gold layer: Bitcoin transaction nodes for KuzuDB graph loading.
+      Each node represents a transaction with its class label and time step.
+    columns:
+      - name: node_id
+        description: Unique numerical node ID for graph operations
+        data_tests:
+          - not_null
+          - unique
+      - name: tx_id
+        description: Original Elliptic transaction identifier
+        data_tests:
+          - not_null
+          - unique
+      - name: tx_class
+        description: "Transaction class: illicit, licit, or unknown"
+      - name: time_step
+        description: Time step (1-49) representing ~2 weeks of activity

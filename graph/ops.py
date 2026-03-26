@@ -351,6 +351,69 @@ class KuzuOps:
             log.error("Failed to import nodes/edges for econ_comp graph: {}", e)
             return
 
+    # Graph: btc_txgraph
+    # ===================
+
+    def _create_btc_txgraph_schema(self):
+        # Nodes
+        # =====
+
+        log.info("Creating btc_txgraph graph schema for Transaction nodes")
+
+        self.conn.execute(
+            """
+            CREATE NODE TABLE Transaction (
+                node_id INT64,
+                tx_id STRING,
+                tx_class STRING,
+                time_step INT32,
+                PRIMARY KEY (node_id)
+            )
+            """
+        )
+
+        # Edges
+        # =====
+
+        log.info("Creating btc_txgraph graph schema for Pays edges")
+        self.conn.execute(
+            "CREATE REL TABLE Pays(FROM Transaction TO Transaction, MANY_MANY)"
+        )
+
+    def _import_btc_txgraph(self, s3_path: str):
+        # Nodes
+        # =====
+
+        log.info("Importing btc_txgraph Transaction nodes")
+
+        self._copy_from_s3(
+            f"{s3_path}/nodes/nodes_transactions.parquet",
+            "COPY Transaction(node_id, tx_id, tx_class, time_step) FROM '$path'",
+        )
+
+        # Edges
+        # =====
+
+        log.info("Importing btc_txgraph Pays edges")
+
+        self._copy_from_s3(
+            f"{s3_path}/edges/edges_pays.parquet",
+            "COPY Pays FROM '$path'",
+        )
+
+    def load_btc_txgraph(self, path: str):
+        try:
+            self._create_btc_txgraph_schema()
+        except Exception as e:
+            log.error("Failed to create schema for btc_txgraph: {}", e)
+            return
+
+        try:
+            self._import_btc_txgraph(path)
+        except Exception as e:
+            log.error("Failed to import nodes/edges for btc_txgraph: {}", e)
+            return
+
     @property
     def num_nodes(self):
         if not hasattr(self, "_num_nodes"):

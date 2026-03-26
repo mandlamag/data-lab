@@ -267,6 +267,46 @@ mlops-monitor-plot: check-dlctl
         --model-uri "models:/dd_logreg_tfidf/latest"
 
 
+# ================================
+# Bitcoin Transaction Graph (Elliptic)
+# ================================
+
+ds_ebtc_url := "https://www.kaggle.com/datasets/ellipticco/elliptic-data-set"
+
+btc-txgraph-ingest: check-dlctl
+    dlctl ingest dataset {{ds_ebtc_url}}
+
+btc-txgraph-transform-bronze: check-dlctl
+    dlctl transform -m "+stage.elliptic_bitcoin"
+
+btc-txgraph-transform-silver: check-dlctl
+    dlctl transform -m "+silver.elliptic_bitcoin"
+
+btc-txgraph-transform-gold: check-dlctl
+    dlctl transform -m "+marts.graphs.btc_txgraph" -m "+marts.analytics.elliptic_bitcoin"
+
+btc-txgraph-transform: btc-txgraph-transform-bronze btc-txgraph-transform-silver btc-txgraph-transform-gold
+
+btc-txgraph-export: check-dlctl
+    dlctl export dataset graphs "btc_txgraph"
+
+btc-txgraph-load: check-dlctl
+    dlctl graph load --overwrite "btc_txgraph"
+
+btc-txgraph-tl: btc-txgraph-transform btc-txgraph-export btc-txgraph-load
+
+btc-txgraph-etl: btc-txgraph-ingest btc-txgraph-tl
+
+btc-txgraph-embeddings: check-dlctl
+    dlctl graph compute embeddings "btc_txgraph" -d 128 -b 4096 -e 5
+    dlctl graph reindex "btc_txgraph"
+
+btc-txgraph-rag: check-dlctl
+    dlctl graph rag "btc_txgraph" -i
+
+btc-txgraph-all: btc-txgraph-etl btc-txgraph-embeddings btc-txgraph-rag
+
+
 # ==============
 # Data Lab Infra
 # ==============
@@ -453,6 +493,6 @@ migrate-lakehouse-catalog-all:
 # Global
 # ======
 
-global-etl: graphrag-etl econ-compnet-etl mlops-etl
-global-ingest: graphrag-ingest econ-compnet-ingest mlops-ingest
-global-tl: graphrag-tl econ-compnet-tl mlops-tl
+global-etl: graphrag-etl econ-compnet-etl mlops-etl btc-txgraph-etl
+global-ingest: graphrag-ingest econ-compnet-ingest mlops-ingest btc-txgraph-ingest
+global-tl: graphrag-tl econ-compnet-tl mlops-tl btc-txgraph-tl

@@ -1,0 +1,70 @@
+version: 2
+
+models:
+  - name: ebtc_transactions
+    description: >
+      Silver layer: Enriched Bitcoin transactions joining features with class
+      labels. Each transaction has 93 local features, 72 aggregated
+      neighborhood features, a time step, and a class label.
+    columns:
+      - name: tx_id
+        description: Unique transaction identifier
+        data_tests:
+          - not_null
+          - unique
+      - name: tx_class
+        description: "Transaction class: illicit, licit, or unknown"
+        data_tests:
+          - accepted_values:
+              values: ['illicit', 'licit', 'unknown']
+      - name: time_step
+        description: Time step (1-49) representing ~2 weeks of activity
+        data_tests:
+          - not_null
+
+  - name: ebtc_edges
+    description: >
+      Silver layer: Validated directed payment flows. Only includes edges
+      where both source and target transactions exist in the features dataset.
+    columns:
+      - name: source_tx_id
+        description: Source transaction identifier
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('ebtc_transactions')
+              field: tx_id
+      - name: target_tx_id
+        description: Target transaction identifier
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('ebtc_transactions')
+              field: tx_id
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - source_tx_id
+            - target_tx_id
+
+  - name: ebtc_illicit_network
+    description: >
+      Silver layer: Subgraph of transactions within 1 hop of known illicit
+      transactions. Useful for risk propagation analysis and identifying
+      suspicious unknown transactions.
+    columns:
+      - name: tx_id
+        description: Transaction identifier
+        data_tests:
+          - not_null
+          - unique
+      - name: tx_class
+        description: "Transaction class: illicit, licit, or unknown"
+      - name: time_step
+        description: Time step of the transaction
+      - name: illicit_proximity
+        description: "'direct' if illicit, 'neighbor' if 1-hop away"
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['direct', 'neighbor']

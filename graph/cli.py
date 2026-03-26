@@ -50,6 +50,8 @@ def load(schema: str, overwrite: bool):
                 ops.load_music_taste(s3_path)
             case "econ_comp":
                 ops.load_econ_comp(s3_path)
+            case "btc_txgraph":
+                ops.load_btc_txgraph(s3_path)
             case _:
                 raise click.UsageError(f"{schema}: graph unsupported")
     except Exception as e:

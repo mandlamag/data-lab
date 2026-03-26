@@ -1,0 +1,27 @@
+version: 2
+
+models:
+  - name: edges_pays
+    description: >
+      Gold layer: Directed payment edges between Bitcoin transactions.
+      An edge from source to target represents a flow of Bitcoin.
+    columns:
+      - name: source_id
+        description: Source transaction node ID
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('nodes_transactions')
+              field: node_id
+      - name: target_id
+        description: Target transaction node ID
+        data_tests:
+          - not_null
+          - relationships:
+              to: ref('nodes_transactions')
+              field: node_id
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - source_id
+            - target_id

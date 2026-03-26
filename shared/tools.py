@@ -23,6 +23,7 @@ def generate_init_sql(path: Optional[str] = None) -> Optional[str]:
 
     schema_vars = [
         "PSQL_CATALOG_STAGE_SCHEMA",
+        "PSQL_CATALOG_SILVER_SCHEMA",
         "PSQL_CATALOG_SECURE_STAGE_SCHEMA",
     ] + MART_SCHEMA_VARS
 

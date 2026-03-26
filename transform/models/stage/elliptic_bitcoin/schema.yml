@@ -1,0 +1,55 @@
+version: 2
+
+models:
+  - name: ebtc_txs_features
+    description: >
+      Bronze layer: Raw Elliptic Bitcoin transaction features.
+      Each row is a Bitcoin transaction with 93 local features (lf_1 to lf_93)
+      derived from transaction info and 72 aggregated neighborhood features
+      (af_1 to af_72) computed from 1-hop neighbors. Features are anonymized.
+    columns:
+      - name: tx_id
+        description: Unique transaction identifier
+        data_tests:
+          - not_null
+          - unique
+      - name: time_step
+        description: >
+          Time step (1-49) representing approximately two weeks of Bitcoin
+          activity, ordered chronologically
+
+  - name: ebtc_txs_classes
+    description: >
+      Bronze layer: Elliptic Bitcoin transaction class labels.
+      Each transaction is labeled as illicit, licit, or unknown.
+    columns:
+      - name: tx_id
+        description: Unique transaction identifier
+        data_tests:
+          - not_null
+          - unique
+      - name: tx_class
+        description: "Transaction class: illicit, licit, or unknown"
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['illicit', 'licit', 'unknown']
+
+  - name: ebtc_txs_edgelist
+    description: >
+      Bronze layer: Directed payment flows between Bitcoin transactions.
+      An edge from source to target indicates a flow of Bitcoin.
+    columns:
+      - name: source_tx_id
+        description: Source transaction identifier (payer)
+        data_tests:
+          - not_null
+      - name: target_tx_id
+        description: Target transaction identifier (payee)
+        data_tests:
+          - not_null
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - source_tx_id
+            - target_tx_id

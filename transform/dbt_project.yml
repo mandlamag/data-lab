@@ -27,6 +27,13 @@ models:
         +schema: taoec
       depression_detection:
         +schema: dd
+      elliptic_bitcoin:
+        +schema: ebtc
+    silver:
+      +database: silver
+      +materialized: table
+      elliptic_bitcoin:
+        +schema: ebtc
     marts:
       +materialized: table
       graphs:
@@ -35,7 +42,11 @@ models:
           +schema: music_taste
         econ_comp:
           +schema: econ_comp
+        btc_txgraph:
+          +schema: btc_txgraph
       analytics:
         +database: analytics
         the_atlas_of_economic_complexity:
           +schema: taoec
+        elliptic_bitcoin:
+          +schema: ebtc

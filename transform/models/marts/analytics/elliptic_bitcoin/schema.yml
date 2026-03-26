@@ -1,0 +1,54 @@
+version: 2
+
+models:
+  - name: ebtc_time_step_summary
+    description: >
+      Gold layer: Aggregated statistics per time step showing the distribution
+      of illicit, licit, and unknown transactions along with edge density.
+    columns:
+      - name: time_step
+        description: Time step (1-49)
+        data_tests:
+          - not_null
+          - unique
+      - name: total_txs
+        description: Total transactions in this time step
+      - name: illicit_txs
+        description: Number of illicit transactions
+      - name: licit_txs
+        description: Number of licit transactions
+      - name: unknown_txs
+        description: Number of unknown transactions
+      - name: illicit_pct
+        description: Percentage of illicit transactions
+      - name: total_edges
+        description: Total payment edges originating in this time step
+      - name: illicit_edges
+        description: Edges involving at least one illicit transaction
+      - name: illicit_edge_pct
+        description: Percentage of edges involving illicit transactions
+
+  - name: ebtc_risk_scores
+    description: >
+      Gold layer: Risk scores for non-illicit transactions based on proximity
+      to known illicit activity. Score is the ratio of illicit neighbors to
+      total neighbors (1-hop). High-risk unknown transactions are prime
+      candidates for investigation.
+    columns:
+      - name: tx_id
+        description: Transaction identifier
+        data_tests:
+          - not_null
+          - unique
+      - name: tx_class
+        description: "Transaction class: licit or unknown"
+      - name: time_step
+        description: Time step of the transaction
+      - name: illicit_neighbor_count
+        description: Number of 1-hop illicit neighbors
+      - name: total_neighbors
+        description: Total number of 1-hop neighbors
+      - name: risk_score
+        description: >
+          Risk score between 0.0 and 1.0, computed as the ratio of illicit
+          neighbors to total neighbors
