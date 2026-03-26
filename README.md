@@ -7,10 +7,10 @@ Tooling for a minimalist data lab running on top of DuckLake.
 Minimum requirements:
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) with [Python 3.13](https://docs.astral.sh/uv/guides/install-python/#installing-a-specific-version) installed.
-- Access to [MinIO](https://min.io/) or [S3](https://aws.amazon.com/s3/)-compatible object storage.
+- Access to [RustFS](https://rustfs.com/), [MinIO](https://min.io/), or any [S3](https://aws.amazon.com/s3/)-compatible object storage.
 
 > [!TIP]
-> I keep a MinIO instance on my tiny home lab, made of an old laptop running Proxmox, but you can easily spin up a MinIO instance using the `minio` service using the `dev` profile under `infra/services/docker/compose.yml`, after setting up your `.env` (see below).
+> I keep a RustFS instance on my tiny home lab, made of an old laptop running Proxmox, but you can easily spin up a RustFS instance using the `rustfs` service using the `dev` profile under `infra/services/docker/compose.yml`, after setting up your `.env` (see below).
 
 To run your own infrastructure, you'll also need:
 
@@ -48,11 +48,11 @@ uv sync
 source .venv/bin/activate
 ```
 
-You can then setup the MinIO service as follows (it will use your env vars):
+You can then setup the RustFS service as follows (it will use your env vars):
 
 ```bash
 docker compose -p datalab -f infra/services/docker/compose.yml \
-    --profile dev up minio minio-init -d
+    --profile dev up rustfs rustfs-init -d
 ```
 
 Or you can spin up the whole infrastructure locally, after Docker is running, by using:
@@ -62,7 +62,7 @@ just infra-provision-local
 ```
 
 > [!TIP]
-> If you're you're having trouble connecting to MinIO, make sure you're using the correct zone, which you set via the `S3_REGION` variable in `.env`.
+> If you're having trouble connecting to your S3-compatible store, make sure you're using the correct zone, which you set via the `S3_REGION` variable in `.env`.
 
 You should also generate the `init.sql` file, so you can easily connect to your DuckLake from the CLI as well:
 
@@ -86,7 +86,66 @@ You're expected to implement your own [dbt](https://docs.getdbt.com/) models to 
 - [andreagarritano/deezer-social-networks](https://www.kaggle.com/datasets/andreagarritano/deezer-social-networks)
 - [undefinenull/million-song-dataset-spotify-lastfm](https://www.kaggle.com/datasets/undefinenull/million-song-dataset-spotify-lastfm)
 
-A few datasets are already supported and pipeline are encoded using `just` commands (e.g., `econ-compnet-etl`, `graphrag-etl`, `mlops-etl`, which correspond to projects with their own YouTube videos).
+A few datasets are already supported and pipelines are encoded using `just` commands (e.g., `econ-compnet-etl`, `graphrag-etl`, `mlops-etl`, `btc-txgraph-etl`, which correspond to projects with their own YouTube videos).
+
+### Bitcoin Transaction Graph (Quick Start)
+
+The Bitcoin transaction graph pipeline uses the [Elliptic dataset](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set) (~203K transactions, ~234K edges, labeled illicit/licit/unknown) and demonstrates the **medallion architecture** (bronze → silver → gold):
+
+```bash
+# Run the full ETL pipeline (ingest → bronze → silver → gold → export → graph)
+just btc-txgraph-etl
+
+# Or run each medallion layer individually
+just btc-txgraph-ingest            # Download Elliptic dataset from Kaggle
+just btc-txgraph-transform-bronze  # Bronze: raw CSV → DuckLake stage tables
+just btc-txgraph-transform-silver  # Silver: enriched transactions, validated edges, illicit network
+just btc-txgraph-transform-gold    # Gold: graph-ready nodes/edges + risk scores & analytics
+
+# Export and load into KuzuDB
+just btc-txgraph-export
+just btc-txgraph-load
+
+# Compute node embeddings and launch GraphRAG REPL
+just btc-txgraph-embeddings
+just btc-txgraph-rag
+
+# Or run everything end-to-end
+just btc-txgraph-all
+```
+
+Once loaded, you can query the medallion layers in the DuckLake:
+
+```sql
+-- Bronze: raw ingested data
+SELECT * FROM stage.ebtc.txs_features LIMIT 5;
+
+-- Silver: enriched with labels
+SELECT * FROM silver.ebtc.transactions WHERE tx_class = 'illicit' LIMIT 5;
+
+-- Silver: 1-hop illicit neighborhood
+SELECT * FROM silver.ebtc.illicit_network WHERE illicit_proximity = 'neighbor' LIMIT 10;
+
+-- Gold: risk scores for unknown transactions
+SELECT * FROM analytics.ebtc.risk_scores WHERE tx_class = 'unknown' ORDER BY risk_score DESC LIMIT 10;
+
+-- Gold: temporal activity distribution
+SELECT * FROM analytics.ebtc.time_step_summary;
+```
+
+And in the GraphRAG REPL (`just btc-txgraph-rag`):
+
+```cypher
+-- Transactions within 2 hops of illicit activity
+MATCH (t:Transaction)-[*1..2]-(n:Transaction {tx_class: 'illicit'})
+RETURN DISTINCT t.tx_id, t.tx_class, t.time_step
+LIMIT 100;
+
+-- Top unknown transactions by illicit exposure
+MATCH (t:Transaction {tx_class: 'unknown'})-[:Pays*1..2]-(i:Transaction {tx_class: 'illicit'})
+RETURN t.tx_id, count(DISTINCT i) AS illicit_neighbors
+ORDER BY illicit_neighbors DESC LIMIT 20;
+```
 
 You can learn all other details below.
 
@@ -117,7 +176,7 @@ Implements a 4-layer infrastructure architecture to help you deploy a data stack
 
 ![Infrastructure Architecture](./docs/infra-architecture.png)
 
-- Layer 1 (`foundation/`) is a Terraform project that will provision MinIO on an LXC running on Proxmox.
+- Layer 1 (`foundation/`) is a Terraform project that will provision object storage (MinIO/RustFS) on an LXC running on Proxmox.
 - Layer 2 (`platform/`) is a Terraform project, with state storage on MinIO, that will provision three Docker VMs and a GitLab VM. GitLab will provide a container registry and come preconfigured with a GitLab Runner that executes on top of one of the Docker VMs.
 - Layer 3 (`services/`) contains a Terraform project (`gitlab/`) to optionally initialize CI/CD variables/secrets from the local `.env`, and a Docker Compose project (`docker/`) to provision the data stack services.
 - Layer 4 (`applications/`) contains local application deployments via Dockerized services (e.g., `ml.server`) and CI/CD integration to provision the required resources (e.g., postgres database and credentials).
@@ -173,7 +232,7 @@ Untracked directory where all your local files will live. This includes the engi
 
 ## 🗃️ Storage Layout
 
-All data is stored in a single S3 bucket (e.g., `s3://lakehouse`, tested with MinIO), with directory structure:
+All data is stored in a single S3 bucket (e.g., `s3://lakehouse`, tested with RustFS and MinIO), with directory structure:
 
 ```
 s3://lakehouse/
@@ -183,7 +242,7 @@ s3://lakehouse/
 │       │   └── HH_mm_SS_sss/
 │       │       └── lakehouse.dump
 │       └── manifest.json
-├── raw/
+├── raw/                              ← Bronze: raw ingested data
 │   └── <dataset-name>/
 │       ├── YYYY_MM_DD/
 │       │   └── HH_mm_SS_sss/
@@ -191,9 +250,11 @@ s3://lakehouse/
 │       │       ├── *.json
 │       │       └── *.parquet
 │       └── manifest.json
-├── stage/
+├── stage/                            ← Bronze: DuckLake staged tables
 │   └── ducklake-*.parquet
-├── marts/
+├── silver/                           ← Silver: enriched, validated data
+│   └── ducklake-*.parquet
+├── marts/                            ← Gold: domain-specific marts
 │   └── <domain>/
 │           └── ducklake-*.parquet
 └── exports/
@@ -214,7 +275,7 @@ s3://lakehouse/
 
 Configuration for data lab is all done through the environment variables defined in `.env`.
 
-This will also support the generation of an `init.sql` file, which contains the DuckLake configurations, including the MinIO/S3 secret and all attached catalogs.
+This will also support the generation of an `init.sql` file, which contains the DuckLake configurations, including the S3 secret and all attached catalogs (including the silver medallion layer).
 
 ### Environment Variables
 
@@ -229,9 +290,9 @@ S3_SECRET_ACCESS_KEY=minio_password
 S3_REGION=eu-west-1
 ```
 
-`S3_ENDPOINT` and `S3_URL_STYLE` are only required if you're using a non-AWS object store like MinIO.
+`S3_ENDPOINT` and `S3_URL_STYLE` are only required if you're using a non-AWS object store like RustFS or MinIO.
 
-`S3_REGION` must match MinIO's region (explicitly setting one in MinIO is recommended).
+`S3_REGION` must match your object store's region (explicitly setting one is recommended).
 
 #### PostgreSQL
 
@@ -247,6 +308,7 @@ Set this to the `root` user password of your PostgreSQL database—only used whe
 S3_BUCKET=lakehouse
 S3_INGEST_PREFIX=raw
 S3_STAGE_PREFIX=stage
+S3_SILVER_PREFIX=silver
 S3_SECURE_STAGE_PREFIX=secure-stage
 S3_GRAPHS_MART_PREFIX=marts/graphs
 S3_ANALYTICS_MART_PREFIX=marts/analytics
@@ -254,7 +316,7 @@ S3_EXPORTS_PREFIX=exports
 S3_BACKUPS_PREFIX=backups
 ```
 
-You can use the defaults here. Everything will live under the `S3_BUCKET`. Each stage has its own prefix under that bucket, but the mart prefixes are special—any environment variable that ends with `*_MART_PREFIX` will be associated with its down `*_MART_DB`, as show in the next section.
+You can use the defaults here. Everything will live under the `S3_BUCKET`. Each stage has its own prefix under that bucket. The `S3_SILVER_PREFIX` is used for the silver medallion layer (enriched, validated data). The mart prefixes are special—any environment variable that ends with `*_MART_PREFIX` will be associated with its own `*_MART_DB`, as shown in the next section.
 
 #### DuckLake Configurations
 
@@ -273,6 +335,7 @@ These files will live under `local/`. The DuckDB `ENGINE_DB` will be leveraged f
 ```bash
 MUSIC_TASTE_GRAPH_DB=graphs/music_taste.kuzu
 ECON_COMP_GRAPH_DB=graphs/econ_comp.kuzu
+BTC_TXGRAPH_GRAPH_DB=graphs/btc_txgraph.kuzu
 ```
 
 The data lab also leverages [Kuzu](https://kuzudb.com/) for graph data science tasks. The path for each graph database can be set here as `*_GRAPH_DB`.
@@ -643,6 +706,24 @@ just generate-init-sql
 | `mlops-monitor-compute` | Compute monitoring statistics for the two models. |
 | `mlops-monitor-plot` | Plot monitoring statistics for the two models. |
 
+### Bitcoin Transaction Graph (Elliptic)
+
+This pipeline uses the [Elliptic dataset](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set) to build a labeled Bitcoin transaction graph, showcasing the **medallion architecture** (bronze → silver → gold) end-to-end.
+
+| Command | Description |
+| ------- | ----------- |
+| `btc-txgraph-ingest` | Ingest the [Elliptic Bitcoin dataset](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set) (~203K transactions, ~234K edges). |
+| `btc-txgraph-transform-bronze` | Bronze layer: stage raw CSVs into DuckLake (features, classes, edgelist). |
+| `btc-txgraph-transform-silver` | Silver layer: enrich transactions with labels, validate edges, compute illicit 1-hop network. |
+| `btc-txgraph-transform-gold` | Gold layer: produce graph-ready nodes/edges, risk scores, and time step analytics. |
+| `btc-txgraph-transform` | Run all three medallion layers in order. |
+| `btc-txgraph-export` | Export the graph mart to Parquet. |
+| `btc-txgraph-load` | Load the graph into KuzuDB. |
+| `btc-txgraph-etl` | Run full ETL: ingest → bronze → silver → gold → export → graph load. |
+| `btc-txgraph-embeddings` | Compute node embeddings (dim 128, batch 4096, 5 epochs) and create vector index. |
+| `btc-txgraph-rag` | Launch interactive GraphRAG REPL for Cypher queries over the Bitcoin graph. |
+| `btc-txgraph-all` | Run ETL, embeddings, and launch RAG. |
+
 ### Data Lab Infra
 
 **Related videos:** https://www.youtube.com/playlist?list=PLeKtvIdgbljMyhjPgJeoXwa_7J9DTx3Fo
@@ -672,7 +753,7 @@ just generate-init-sql
 | `infra-provision-platform` | Run `terraform apply` for `infra/platform`. |
 | `infra-provision-services` | Run `terraform apply` for `infra/services/gitlab` (required a configured `.env`), and `docker compose up` under the appropriate `docker-shared` context, using `infra/services/docker/compose.yml`. |
 | `infra-provision-all` | Run all of the above, in order. |
-| `infra-provision-local` | Run `docker compose up` with the `dev` profile enabled, using `infra/services/docker/compose.yml`. |
+| `infra-provision-local` | Run `docker compose up` with the `dev` profile enabled (includes RustFS + init), using `infra/services/docker/compose.yml`. |
 
 #### Destruction
 
