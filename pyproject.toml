@@ -66,6 +66,11 @@ dlctl = "dlctl.cli:dlctl"
 
 [tool.uv]
 package = true
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 
 [tool.pytest.ini_options]
 addopts = "--capture=no --maxfail=1 --disable-warnings"
