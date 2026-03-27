@@ -1,6 +1,19 @@
 # CHANGELOG
 
 
+## v1.0.2 (2026-03-27)
+
+### Bug Fixes
+
+- Add required-environments for ARM64 macOS and Linux platforms
+  ([`37e63eb`](https://github.com/mandlamag/data-lab/commit/37e63ebd54806d424fdc5f615ed80b5136d5a740))
+
+Torch no longer ships x86_64 macOS wheels. Restrict uv resolution to Linux (x86_64/aarch64) and
+  macOS ARM64 to ensure the lock file resolves compatible wheels for all target platforms.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+
+
 ## v1.0.1 (2026-03-27)
 
 ### Bug Fixes
