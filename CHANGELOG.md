@@ -1,6 +1,49 @@
 # CHANGELOG
 
 
+## v1.0.1 (2026-03-27)
+
+### Bug Fixes
+
+- Loosen kuzu and xgboost version pins for ARM64 compatibility
+  ([`61b6383`](https://github.com/mandlamag/data-lab/commit/61b6383ead5ab2c440bbc052cc8dc20d0da3c63b))
+
+Change kuzu==0.11.0 to >=0.11.0 and xgboost==3.0.2 to >=3.0.2 so uv can resolve platform-compatible
+  wheels on Apple Silicon (aarch64) Macs.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+
+### Documentation
+
+- Fix stale README content for demo accuracy
+  ([`260abca`](https://github.com/mandlamag/data-lab/commit/260abca2b715392942b714f750bf69fee5c67934))
+
+Remove resolved dbt-duckdb PR #564 note, update transform section to reference PostgreSQL catalogs
+  and medallion architecture instead of SQLite, update DuckLake config docs to show PSQL_CATALOG
+  vars, fix backup section concurrent users note, and replace minio placeholder credentials with
+  generic ones across README and .env.example.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+
+- Replace quick start with step-by-step local dev setup guide
+  ([`6d65ebb`](https://github.com/mandlamag/data-lab/commit/6d65ebb74db20421a1c2563190f16e8ea6104115))
+
+Rewrite quick start section with numbered steps covering prerequisites, clone/install, .env
+  configuration for local dev (localhost endpoints), Docker service provisioning, PostgreSQL
+  database setup for DuckLake, lakehouse verification, and service URL table.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+
+- Update README with Bitcoin pipeline, medallion architecture, and RustFS
+  ([`741dbc9`](https://github.com/mandlamag/data-lab/commit/741dbc9cf66efc22816c65e39135dfa35e6842c0))
+
+Update quick start and configuration sections to reference RustFS instead of MinIO, add Bitcoin
+  Transaction Graph pipeline documentation with medallion layer examples (bronze/silver/gold),
+  update storage layout diagram, and add btc-txgraph just command reference table.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+
+
 ## v1.0.0 (2026-03-26)
 
 ### Bug Fixes
