@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'win32')",
@@ -508,7 +508,7 @@ wheels = [
 
 [[package]]
 name = "datalab"
-version = "1.0.1"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiokafka" },
@@ -586,7 +586,7 @@ requires-dist = [
     { name = "joblib", specifier = ">=1.5.1" },
     { name = "jupyterlab", specifier = ">=4.4.5" },
     { name = "kagglehub", specifier = ">=0.3.12" },
-    { name = "kuzu", specifier = "==0.11.0" },
+    { name = "kuzu", specifier = ">=0.11.0" },
     { name = "langchain", specifier = ">=0.3.26" },
     { name = "langchain-kuzu", specifier = ">=0.4.2" },
     { name = "langchain-ollama", specifier = ">=0.3.3" },
@@ -610,7 +610,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.7.1" },
     { name = "tqdm", specifier = ">=4.67.1" },
     { name = "uvicorn", specifier = ">=0.35.0" },
-    { name = "xgboost", specifier = "==3.0.2" },
+    { name = "xgboost", specifier = ">=3.0.2" },
 ]
 
 [package.metadata.requires-dev]
