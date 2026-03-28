@@ -46,10 +46,8 @@ class DBTHandler:
             args += ["--debug"]
 
         if models is not None and len(models) > 0:
-            args += [
-                "--select",
-                ",".join(f"{model}" for model in models),
-            ]
+            for model in models:
+                args += ["--select", model]
 
         result = self.dbt.invoke(args)
 
@@ -71,10 +69,8 @@ class DBTHandler:
             args += ["--debug"]
 
         if models is not None and len(models) > 0:
-            args += [
-                "--select",
-                ",".join(f"{model}" for model in models),
-            ]
+            for model in models:
+                args += ["--select", model]
 
         self.dbt.invoke(args)
 

@@ -1,7 +1,17 @@
 {{ config(alias='transactions') }}
 
+WITH features_numbered AS (
+    SELECT row_number() OVER () AS row_num, *
+    FROM {{ ref('ebtc_txs_features') }}
+),
+
+classes_numbered AS (
+    SELECT row_number() OVER () AS row_num, *
+    FROM {{ ref('ebtc_txs_classes') }}
+)
+
 SELECT
-    f.tx_id,
+    c.tx_id,
     c.tx_class,
     f.time_step,
     f.lf_1, f.lf_2, f.lf_3, f.lf_4, f.lf_5, f.lf_6, f.lf_7, f.lf_8, f.lf_9, f.lf_10,
@@ -22,6 +32,6 @@ SELECT
     f.af_51, f.af_52, f.af_53, f.af_54, f.af_55, f.af_56, f.af_57, f.af_58, f.af_59, f.af_60,
     f.af_61, f.af_62, f.af_63, f.af_64, f.af_65, f.af_66, f.af_67, f.af_68, f.af_69, f.af_70,
     f.af_71
-FROM {{ ref('ebtc_txs_features') }} AS f
-LEFT JOIN {{ ref('ebtc_txs_classes') }} AS c
-    ON f.tx_id = c.tx_id
+FROM features_numbered AS f
+LEFT JOIN classes_numbered AS c
+    ON f.row_num = c.row_num

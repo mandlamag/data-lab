@@ -280,10 +280,10 @@ btc-txgraph-transform-bronze: check-dlctl
     dlctl transform -m "+stage.elliptic_bitcoin"
 
 btc-txgraph-transform-silver: check-dlctl
-    dlctl transform -m "+silver.elliptic_bitcoin"
+    dlctl transform -m "silver.elliptic_bitcoin"
 
 btc-txgraph-transform-gold: check-dlctl
-    dlctl transform -m "+marts.graphs.btc_txgraph" -m "+marts.analytics.elliptic_bitcoin"
+    dlctl transform -m "marts.graphs.btc_txgraph" -m "marts.analytics.elliptic_bitcoin"
 
 btc-txgraph-transform: btc-txgraph-transform-bronze btc-txgraph-transform-silver btc-txgraph-transform-gold
 
