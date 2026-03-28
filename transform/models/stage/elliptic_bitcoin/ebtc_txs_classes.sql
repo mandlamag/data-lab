@@ -8,7 +8,7 @@ SELECT
         ELSE 'unknown'
     END AS tx_class
 FROM read_csv(
-    '{{ env_var("RAW__ELLIPTIC_DATA_SET__ELLIPTIC_TXS_CLASSES", "NOT_FOUND") }}',
+    '{{ env_var("RAW__ELLIPTIC_DATA_SET__ELLIPTIC_BITCOIN_DATASET__ELLIPTIC_TXS_CLASSES", "NOT_FOUND") }}',
     delim = ',',
     header = true,
     columns = {
