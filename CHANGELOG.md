@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v1.0.3 (2026-03-28)
+
+### Bug Fixes
+
+- Elliptic dataset column naming, env var paths, and Postgres 17
+  ([`ad0d1c6`](https://github.com/mandlamag/data-lab/commit/ad0d1c6e42d0c32554e825bab1633fcb28d64b36))
+
+Fix bronze layer dbt models for Kaggle's subdirectory structure (ELLIPTIC_BITCOIN_DATASET in env var
+  path), zero-padded DuckDB column names (column001 vs column0), correct feature count (166 cols,
+  not 167), and downgrade Postgres 18 to 17.5 for Docker compatibility.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+
+
 ## v1.0.2 (2026-03-27)
 
 ### Bug Fixes
