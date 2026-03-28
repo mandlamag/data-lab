@@ -31,7 +31,7 @@ SELECT
     f.af_41, f.af_42, f.af_43, f.af_44, f.af_45, f.af_46, f.af_47, f.af_48, f.af_49, f.af_50,
     f.af_51, f.af_52, f.af_53, f.af_54, f.af_55, f.af_56, f.af_57, f.af_58, f.af_59, f.af_60,
     f.af_61, f.af_62, f.af_63, f.af_64, f.af_65, f.af_66, f.af_67, f.af_68, f.af_69, f.af_70,
-    f.af_71
+    f.af_71, f.af_72
 FROM features_numbered AS f
 LEFT JOIN classes_numbered AS c
     ON f.row_num = c.row_num
