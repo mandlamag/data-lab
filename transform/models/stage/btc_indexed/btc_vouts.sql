@@ -1,17 +1,11 @@
 {{ config(alias='vouts') }}
 
-SELECT *
-FROM postgres_query(
+SELECT hash, idx, vout, blockheight, address, amount, label
+FROM postgres_scan(
     {{ btc_db_conn() }},
-    '
-    SELECT hash, idx, vout, blockheight, address, amount, label
-    FROM vouts
-    WHERE address IN (
-        SELECT DISTINCT address
-        FROM vouts
-        WHERE label IS NOT NULL AND label != ''''
-        LIMIT 100000
-    )
-    LIMIT 500000
-    '
+    'public',
+    'vouts',
+    filter_pushdown := true
 )
+WHERE label IS NOT NULL AND label != ''
+LIMIT 500000
