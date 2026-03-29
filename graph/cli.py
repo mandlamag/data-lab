@@ -249,7 +249,7 @@ def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes
             color = color_map.get(tx_class, "#95a5a6")
             border = "#ff0000" if tx_class == "illicit" else "#333333"
             net.add_node(
-                nid,
+                int(nid),
                 label=data.get("tx_id", str(nid)),
                 title=(
                     f"<b>tx_id:</b> {data.get('tx_id', '')}<br>"
@@ -263,7 +263,7 @@ def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes
             )
 
         for src, dst, data in G.edges(data=True):
-            net.add_edge(src, dst, color="#4a4a6a", arrows="to")
+            net.add_edge(int(src), int(dst), color="#4a4a6a", arrows="to")
 
         net.set_options("""
         {
