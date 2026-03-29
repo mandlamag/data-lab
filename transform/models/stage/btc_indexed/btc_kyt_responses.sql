@@ -1,7 +1,4 @@
-{{ config(
-    alias='kyt_responses',
-    pre_hook="DROP TABLE IF EXISTS {{ this.database }}.{{ this.schema }}.kyt_responses__dbt_tmp"
-) }}
+{{ config(alias='kyt_responses', materialized='view') }}
 
 SELECT
     id,

@@ -1,7 +1,4 @@
-{{ config(
-    alias='sanctioned',
-    pre_hook="DROP TABLE IF EXISTS {{ this.database }}.{{ this.schema }}.sanctioned__dbt_tmp"
-) }}
+{{ config(alias='sanctioned', materialized='view') }}
 
 SELECT *
 FROM postgres_scan(
