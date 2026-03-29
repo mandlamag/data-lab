@@ -126,7 +126,8 @@ def reindex(schema: str):
 @click.option("--illicit", is_flag=True, help="Show the illicit subgraph (sampled)")
 @click.option("--high-risk", is_flag=True, help="Show high-risk transactions and their neighbors")
 @click.option("-n", "--max-nodes", default=100, type=click.INT, help="Max nodes to display")
-def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes: int):
+@click.option("-o", "--output", type=click.Path(), help="Save to file (e.g. graph.png) instead of displaying")
+def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes: int, output: Optional[str]):
     import random
 
     from graph.visualization import plot
@@ -211,6 +212,11 @@ def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes
         nid for nid, data in G.nodes(data=True) if data.get("tx_class") == "licit"
     ]
 
+    import matplotlib
+    if output:
+        matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     plot(
         G,
         name_prop="tx_id",
@@ -218,6 +224,12 @@ def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes
         scale=0.5,
         font_size=6,
     )
+
+    if output:
+        plt.savefig(output, bbox_inches="tight", facecolor="white")
+        log.info("Saved to {}", output)
+    else:
+        plt.show()
 
 
 @graph.command(help="Run GraphRAG pipeline on Bitcoin transaction graph")
