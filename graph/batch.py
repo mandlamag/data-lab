@@ -5,7 +5,7 @@ import pandas as pd
 from bidict import bidict
 from loguru import logger as log
 
-from graph.ops import KuzuOps
+from graph.ops import GraphOps
 
 
 @dataclass
@@ -37,7 +37,7 @@ class NodeBatch:
         self.edges.target_id = self.edges.target_id.map(lambda tid: self.index[tid])
 
 
-class KuzuNodeBatcher:
+class NodeBatcher:
     def __init__(
         self,
         schema: str,
@@ -53,13 +53,13 @@ class KuzuNodeBatcher:
         self.limit = batch_size
         self.count = 0
 
-        self.ops = KuzuOps(schema)
+        self.ops = GraphOps(schema)
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        log.info("Querying graph DB for node batch {}", self.count + 1)
+        log.info("Querying graph for node batch {}", self.count + 1)
         nodes = self.ops.query_node_batch(self.offset, self.limit)
 
         if len(nodes) == 0:

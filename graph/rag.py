@@ -1,3 +1,4 @@
+import json
 import re
 import textwrap
 import threading
@@ -13,9 +14,6 @@ from langchain.schema.runnable import Runnable
 from langchain.schema.runnable.config import RunnableConfig
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.runnables import RunnableParallel, RunnablePassthrough
-from langchain_kuzu.chains.graph_qa.kuzu import extract_cypher, remove_prefix
-from langchain_kuzu.chains.graph_qa.prompts import KUZU_GENERATION_PROMPT
-from langchain_kuzu.graphs.kuzu_graph import KuzuGraph
 from langchain_ollama import ChatOllama
 from loguru import logger as log
 from platformdirs import user_config_path
@@ -26,7 +24,7 @@ from prompt_toolkit.history import FileHistory
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.styles import Style
 
-from graph.ops import KuzuOps
+from graph.ops import GraphOps
 
 RunnableFn = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -80,12 +78,8 @@ class GraphRAG(Runnable):
         self.chat_model = chat_model
         self.column_name = column_name
 
-        self.ops = KuzuOps(schema)
-
-        self.graph = KuzuGraph(
-            self.ops.conn.database,
-            allow_dangerous_requests=True,
-        )
+        self.ops = GraphOps(schema)
+        self.ops.reindex_embeddings(column_name)
 
     def setup_llm_models(self):
         ollama_models = {m.model for m in ollama.list().models}
@@ -98,9 +92,9 @@ class GraphRAG(Runnable):
     @property
     def code_llm(self) -> BaseChatModel:
         if not hasattr(self, "_code_llm"):
-            self._chat_llm = ChatOllama(model=self.code_model, temperature=0.0)
+            self._code_llm = ChatOllama(model=self.code_model, temperature=0.0)
 
-        return self._chat_llm
+        return self._code_llm
 
     @property
     def chat_llm(self) -> BaseChatModel:
@@ -114,66 +108,76 @@ class GraphRAG(Runnable):
         if not hasattr(self, "_entities_prompt"):
             tpl = textwrap.dedent(
                 """
-                You are an AI assistant that extracts entities from a given user query using named entity recognition and matches them to nodes in a knowledge graph, returning the node_id properties of those nodes, and nothing more.
-
-                Input:
-                User query: a sentence or question mentioning entities to retrieve from the knowledge graph.
+                You are an AI assistant analyzing a Bitcoin transaction graph. The graph contains Transaction nodes with properties: tx_id (string), tx_class (illicit/licit/unknown), and time_step (integer 1-49).
 
                 Task:
-                Extract all relevant entities from the user query as nodes represented by their node_id property.
+                From the user query, extract transaction identifiers, classes, or time steps that should be looked up in the graph. Return a JSON array of filter objects.
 
-                Rules:
-                - Only use node properties defined in the schema.
-                - Use exact property names and values as extracted from the user query.
-                - If a property value is not specified, do not guess it.
-                - Ignore user query requests, and just return the node_id property for nodes matching named entities explicitly mentioned in the user query.
-                - Do not make recommendations. Only return the node_id properties for extracted entities that have a node in the graph.
+                Filter types:
+                - By tx_id: {{"filter": "tx_id", "value": "123456"}}
+                - By class: {{"filter": "tx_class", "value": "illicit"}}
+                - By time step: {{"filter": "time_step", "value": 5}}
+                - By risk (high-risk unknown transactions): {{"filter": "high_risk"}}
 
                 Example:
-
-                If the user mentions Nirvana and there is an artist property on a Track node, then all nodes matching Nirvana should be retrieved as follows:
-
-                ```cypher
-                MATCH (t:Track)
-                WHERE LOWER(t.artist) = LOWER("Nirvana")
-                RETURN t.node_id AS node_id;
-                ```
-
-                If, in addition to Nirvana, the user algo mentions the grunge genre, and there is a genre property of a Genre node, then all nodes matching grunge should be added to be previous query as follows:
-
-                ```cypher
-                MATCH (t:Track)
-                WHERE LOWER(t.artist) = LOWER("Nirvana")
-                RETURN t.node_id AS node_id
-
-                UNION
-
-                MATCH (g:Genre)
-                WHERE LOWER(g.genre) = LOWER("grunge")
-                RETURN g.node_id AS node_id
+                User: "Show me illicit transactions at time step 10"
+                ```json
+                [{{"filter": "tx_class", "value": "illicit"}}, {{"filter": "time_step", "value": 10}}]
                 ```
 
                 User query:
                 "{user_query}"
 
-                ---
-
-                Here are the node_id properties for all nodes matching the extracted entities:
-
+                ```json
                 [Your output here]
+                ```
                 """
             ).strip("\n")
-
-            log.debug("entities prompt:\n{}", tpl)
 
             self._entities_prompt = ChatPromptTemplate.from_template(tpl)
 
         return self._entities_prompt
 
-    def cypher_from_ai_message(self, message: AIMessage) -> dict[str, Any]:
-        cypher = remove_prefix(extract_cypher(message.content), "cypher")
-        log.debug("cypher from ai message:\n{}", cypher)
-        return dict(query=cypher)
+    def _extract_filters(self, message: AIMessage) -> list[dict]:
+        content = message.content
+        json_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", content, re.DOTALL)
+        if json_match:
+            content = json_match.group(1)
+        try:
+            return json.loads(content.strip())
+        except json.JSONDecodeError:
+            log.warning("Failed to parse filter response: {}", content)
+            return []
+
+    def _match_filters(self, filters: list[dict]) -> pd.DataFrame:
+        matched_ids = set()
+
+        for f in filters:
+            filter_type = f.get("filter")
+
+            if filter_type == "tx_id":
+                node = self.ops.get_node_by_tx_id(str(f["value"]))
+                if node:
+                    matched_ids.add(node["node_id"])
+
+            elif filter_type == "tx_class":
+                for idx, props in self.ops._node_props.items():
+                    if props.get("tx_class") == f["value"]:
+                        matched_ids.add(props["node_id"])
+
+            elif filter_type == "time_step":
+                for idx, props in self.ops._node_props.items():
+                    if props.get("time_step") == int(f["value"]):
+                        matched_ids.add(props["node_id"])
+
+            elif filter_type == "high_risk":
+                risk_df = self.ops.high_risk_transactions(threshold=0.1)
+                matched_ids.update(risk_df["node_id"].tolist())
+
+        if not matched_ids:
+            return pd.DataFrame(columns=["node_id"])
+
+        return pd.DataFrame({"node_id": sorted(matched_ids)})
 
     def query_graph(
         self,
@@ -181,17 +185,12 @@ class GraphRAG(Runnable):
         limit: Optional[int] = None,
     ) -> RunnableFn:
         def run(inputs: dict[str, Any]) -> dict[str, Any]:
-            log.info(
-                "Querying graph for matching entities (shuffle={}, limit={})",
-                shuffle,
-                limit,
-            )
+            log.info("Matching graph entities (shuffle={}, limit={})", shuffle, limit)
 
-            query = inputs["query"]
-            params = inputs.get("params")
+            filters = inputs.get("filters", [])
 
             try:
-                entities_df = pd.DataFrame(self.graph.query(query, params))
+                entities_df = self._match_filters(filters)
 
                 if shuffle:
                     entities_df = entities_df.sample(frac=1)
@@ -200,8 +199,10 @@ class GraphRAG(Runnable):
                     entities_df = entities_df.head(limit)
 
                 return dict(entities=entities_df)
-            except:
-                raise GraphRetrievalException("Graph query failed", query=query)
+            except Exception:
+                raise GraphRetrievalException(
+                    "Graph query failed", query=str(filters)
+                )
 
         return run
 
@@ -209,29 +210,23 @@ class GraphRAG(Runnable):
     def graph_retriever(self) -> Runnable:
         if not hasattr(self, "_graph_retriever"):
 
-            def entities_prompt_to_kuzu_inputs(
-                inputs: dict[str, Any],
-            ) -> dict[str, str]:
-                self.graph.refresh_schema()
+            def build_prompt_inputs(inputs: dict[str, Any]) -> dict[str, str]:
+                return {"user_query": inputs["user_query"]}
 
-                return {
-                    "schema": self.graph.get_schema,
-                    "question": self.entities_prompt.format(**inputs),
-                }
+            def parse_filters(message: AIMessage) -> dict[str, Any]:
+                return {"filters": self._extract_filters(message)}
 
             self._graph_retriever = (
-                entities_prompt_to_kuzu_inputs
-                | KUZU_GENERATION_PROMPT
+                build_prompt_inputs
+                | self.entities_prompt
                 | self.code_llm
-                | self.cypher_from_ai_message
+                | parse_filters
                 | self.query_graph(shuffle=True, limit=100)
             )
 
         return self._graph_retriever
 
     def combined_knn(self, k: int) -> RunnableFn:
-        knn_per_node_dfs = []
-
         def run(inputs: dict[str, Any]) -> dict[str, Any]:
             entities = inputs["entities"]
 
@@ -239,6 +234,7 @@ class GraphRAG(Runnable):
                 raise ContextAssemblerException("Entities not found")
 
             node_ids = entities.node_id.to_list()
+            knn_dfs = []
 
             for node_id in node_ids:
                 knn_df = self.ops.knn(
@@ -247,12 +243,14 @@ class GraphRAG(Runnable):
                     max_distance=0.25,
                     exclude=node_ids,
                 )
+                knn_dfs.append(knn_df)
 
-                knn_per_node_dfs.append(knn_df)
+            if not knn_dfs:
+                raise ContextAssemblerException("No nearest neighbors found")
 
-            combined_knn_node_ids = (
-                pd.concat(knn_per_node_dfs)
-                .groupby(["table", "node_id"])
+            combined = (
+                pd.concat(knn_dfs)
+                .groupby("node_id")
                 .mean()
                 .reset_index()
                 .sort_values("distance")
@@ -260,15 +258,12 @@ class GraphRAG(Runnable):
                 .to_list()
             )
 
-            return dict(knn=combined_knn_node_ids)
+            return dict(knn=combined)
 
         return run
 
     def nn_sample_shortest_paths(
-        self,
-        n: int,
-        min_length: int,
-        max_length: int,
+        self, n: int, min_length: int, max_length: int
     ) -> RunnableFn:
         def run(inputs: dict[str, Any]) -> dict[str, Any]:
             entities = inputs["graph_retrieval"]["entities"]
@@ -279,15 +274,11 @@ class GraphRAG(Runnable):
             source_node_ids = entities.node_id.to_list()
             target_node_ids = inputs["combined_knn"]["knn"]
 
-            if target_node_ids is None or len(target_node_ids) == 0:
+            if not target_node_ids:
                 raise ContextAssemblerException("Nearest neighbors not found")
 
             paths_df = self.ops.sample_shortest_paths(
-                source_node_ids,
-                target_node_ids,
-                n,
-                min_length,
-                max_length,
+                source_node_ids, target_node_ids, n, min_length, max_length
             )
 
             return dict(paths=paths_df)
@@ -295,28 +286,18 @@ class GraphRAG(Runnable):
         return run
 
     def nn_random_walks(
-        self,
-        n: int,
-        min_length: int,
-        max_length: int,
+        self, n: int, min_length: int, max_length: int
     ) -> RunnableFn:
         def run(inputs: dict[str, Any]) -> dict[str, Any]:
             source_node_ids = inputs["combined_knn"]["knn"]
 
-            if source_node_ids is None or len(source_node_ids) == 0:
+            if not source_node_ids:
                 raise ContextAssemblerException("Nearest neighbors not found")
 
-            paths_dfs = []
-
-            for source_node_id in source_node_ids:
-                paths_df = self.ops.random_walk(
-                    source_node_id,
-                    n,
-                    min_length,
-                    max_length,
-                )
-
-                paths_dfs.append(paths_df)
+            paths_dfs = [
+                self.ops.random_walk(nid, n, min_length, max_length)
+                for nid in source_node_ids
+            ]
 
             return dict(paths=pd.concat(paths_dfs))
 
@@ -324,21 +305,14 @@ class GraphRAG(Runnable):
 
     def combine_paths(self, inputs: dict[str, Any]) -> dict[str, Any]:
         log.info("Combining paths from multiple outputs")
-
-        dfs = [paths_df["paths"][["paths"]] for paths_df in inputs.values()]
-        combined_df = pd.concat(dfs).reset_index(drop=True)
-
-        return dict(paths=combined_df)
+        dfs = [v["paths"][["paths"]] for v in inputs.values()]
+        return dict(paths=pd.concat(dfs).reset_index(drop=True))
 
     def hydrate_paths(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        paths_df = inputs["paths"]
-
-        context_df = self.ops.path_descriptions(
-            paths_df,
-            exclude_props=[self.column_name],
+        context = self.ops.path_descriptions(
+            inputs["paths"], exclude_props=[self.column_name]
         )
-
-        return dict(context=context_df)
+        return dict(context=context)
 
     @property
     def context_assembler(self) -> Runnable:
@@ -350,14 +324,10 @@ class GraphRAG(Runnable):
                 )
                 | RunnableParallel(
                     nn_shortest_paths=self.nn_sample_shortest_paths(
-                        n=10,
-                        min_length=1,
-                        max_length=3,
+                        n=10, min_length=1, max_length=3
                     ),
                     nn_profile_paths=self.nn_random_walks(
-                        n=3,
-                        min_length=1,
-                        max_length=3,
+                        n=3, min_length=1, max_length=3
                     ),
                 )
                 | self.combine_paths
@@ -369,9 +339,7 @@ class GraphRAG(Runnable):
     def answer_inputs_transform(self, inputs: dict[str, Any]) -> dict[str, Any]:
         user_query = inputs["user_query"]
         context = inputs["kg"]["context"]
-
         log.debug("Context:\n{}", context)
-
         return dict(user_query=user_query, context=context)
 
     @property
@@ -379,15 +347,16 @@ class GraphRAG(Runnable):
         if not hasattr(self, "_final_prompt"):
             tpl = textwrap.dedent(
                 """
-                You are an AI assistant who responds to user queries, taking into account additional context from a knowledge graph, provided in a cypher compatible format.
+                You are an AI assistant analyzing Bitcoin transactions. You have access to a knowledge graph of Bitcoin payment flows from the Elliptic dataset.
 
-                Input:
-                User query: a question about entities and relationships on a knowledge graph.
-                Nodes: relevant nodes to help establish a context.
-                Relationships: relevant relationships, between the provided nodes, to help establish a context.
+                Each transaction has:
+                - tx_id: unique identifier
+                - tx_class: illicit, licit, or unknown
+                - time_step: temporal window (1-49, ~2 weeks each)
 
-                Task:
-                Answer the user based on what you know and the additional knowledge provided by the context.
+                Relationships are payment flows: one transaction paying another.
+
+                Use the context below to answer the user's question about transaction patterns, illicit activity, risk assessment, or payment flows.
 
                 User query:
                 "{user_query}"
@@ -396,13 +365,9 @@ class GraphRAG(Runnable):
 
                 ---
 
-                Here is the answer to your question, based on what I know and the knowledge graph I have access to:
-
-                [Your output here]
+                [Your answer here]
                 """
             ).strip("\n")
-
-            log.debug("final prompt:\n{}", tpl)
 
             self._final_prompt = ChatPromptTemplate.from_template(tpl)
 
@@ -414,11 +379,10 @@ class GraphRAG(Runnable):
             self._answer_generator = (
                 self.answer_inputs_transform | self.final_prompt | self.chat_llm
             )
-
         return self._answer_generator
 
     def invoke(self, inputs, config: RunnableConfig = None) -> AIMessage:
-        log.info("Running Graph RAG for user query:\n{}", inputs["user_query"])
+        log.info("Running Graph RAG for:\n{}", inputs["user_query"])
 
         self.setup_llm_models()
 
@@ -430,10 +394,7 @@ class GraphRAG(Runnable):
             | self.answer_generator
         )
 
-        log.debug("user query: {}", inputs["user_query"])
-        result = chain.invoke(inputs, config=config)
-
-        return result
+        return chain.invoke(inputs, config=config)
 
     def loader(self, stop_event: threading.Event):
         start_time = time.time()
@@ -442,12 +403,9 @@ class GraphRAG(Runnable):
         while not stop_event.is_set():
             for symbol in symbols:
                 elapsed = time.strftime(
-                    "%H:%M:%S",
-                    time.gmtime(time.time() - start_time),
+                    "%H:%M:%S", time.gmtime(time.time() - start_time)
                 )
-
                 print(f"\r⏱ {elapsed} {symbol} ", end="", flush=True)
-
                 time.sleep(0.1)
 
         print("\b\b\b   ", end="\n\n", flush=True)
@@ -466,10 +424,7 @@ class GraphRAG(Runnable):
                     lexer=CommandLexer(),
                     placeholder=HTML("<faded>Enter a prompt (or .help)</faded>"),
                     style=Style.from_dict(
-                        {
-                            "faded": "fg:#8a8a8a",
-                            "cmd": "fg:#00aeff",
-                        }
+                        {"faded": "fg:#8a8a8a", "cmd": "fg:#00aeff"}
                     ),
                 )
             except (KeyboardInterrupt, EOFError):
@@ -477,12 +432,13 @@ class GraphRAG(Runnable):
             else:
                 user_query = user_query.strip()
 
-                cmd_info = [f"  {cmd:<10}{info}" for cmd, info in COMMAND_INFO.items()]
-                cmd_info = "\n".join(cmd_info)
+                cmd_info = [
+                    f"  {cmd:<10}{info}" for cmd, info in COMMAND_INFO.items()
+                ]
 
                 match user_query:
                     case ".help":
-                        print(f"Available commands:\n{cmd_info}\n")
+                        print(f"Available commands:\n{chr(10).join(cmd_info)}\n")
                     case ".quit":
                         break
                     case ".clear":
@@ -492,10 +448,8 @@ class GraphRAG(Runnable):
                         log.remove()
 
                         stop_event = threading.Event()
-
                         loader_thread = threading.Thread(
-                            target=self.loader,
-                            args=(stop_event,),
+                            target=self.loader, args=(stop_event,)
                         )
                         loader_thread.start()
 

@@ -3,8 +3,8 @@ from enum import Enum
 import torch
 from loguru import logger as log
 
-from graph.batch import KuzuNodeBatcher
-from graph.ops import KuzuOps
+from graph.batch import NodeBatcher
+from graph.ops import GraphOps
 
 
 class NodeEmbeddingAlgo(Enum):
@@ -27,7 +27,7 @@ class NodeEmbedding:
         self.epochs = epochs
         self.algo = algo
 
-        self.ops = KuzuOps(schema)
+        self.ops = GraphOps(schema)
 
         self.dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         log.info("Using device: {}", self.dev)
@@ -45,7 +45,7 @@ class NodeEmbedding:
         embeddings = {}
 
         for epoch in range(1, self.epochs + 1):
-            node_batcher = KuzuNodeBatcher(
+            node_batcher = NodeBatcher(
                 self.schema,
                 include_edges=True,
                 reindex_edges=True,

@@ -1,71 +1,81 @@
-from pathlib import Path
-
-import kuzu
+import pandas as pd
 from loguru import logger as log
 
-from shared.lakehouse import Lakehouse
-from shared.settings import LOCAL_DIR, env
+from graph.ops import GraphOps
 
 
 class GraphAnalytics:
     def __init__(self, schema: str):
-        dbname = env.str(f"{schema.upper()}_GRAPH_DB")
-        db_path = Path(LOCAL_DIR) / dbname
+        self.ops = GraphOps(schema)
 
-        if not db_path.exists():
-            raise FileNotFoundError(f"db not found: {db_path}")
+    def risk_summary(self) -> pd.DataFrame:
+        """Compute risk scores for all non-illicit transactions."""
+        return self.ops.high_risk_transactions(threshold=0.0)
 
-        db = kuzu.Database(db_path)
-        self.conn = kuzu.Connection(db)
+    def illicit_network_stats(self) -> dict:
+        """Summary statistics for the illicit subgraph."""
+        illicit_ids = self.ops.illicit_subgraph()
+        total = self.ops.num_nodes
 
-        self.lh = Lakehouse()
-
-    def compute_con_scores(
-        self,
-        node_label: str,
-        rel_label: str,
-        column_name: str = "con_score",
-    ):
-        log.info(
-            "Computing CON scores for {} nodes via {} rels, storing to {} property",
-            node_label,
-            rel_label,
-            column_name,
+        illicit_direct = sum(
+            1
+            for props in self.ops._node_props.values()
+            if props.get("tx_class") == "illicit"
         )
 
-        log.debug("Adding {} to {}, if not exists", column_name, node_label)
+        return {
+            "total_transactions": total,
+            "illicit_transactions": illicit_direct,
+            "illicit_network_size": len(illicit_ids),
+            "illicit_pct": round(illicit_direct / total * 100, 2) if total else 0,
+            "network_pct": round(len(illicit_ids) / total * 100, 2) if total else 0,
+        }
 
-        self.conn.execute(
-            f"""
-            ALTER TABLE {node_label}
-            ADD IF NOT EXISTS {column_name} DOUBLE
-            """
-        )
+    def community_analysis(self) -> dict:
+        """Run Louvain community detection and tag communities by illicit concentration."""
+        result = self.ops.louvain()
+        communities = result["communities"]
 
-        log.debug("Resetting {} on {}", column_name, node_label)
+        community_stats = []
+        for i, comm in enumerate(communities):
+            comm_set = set(comm)
+            illicit_count = sum(
+                1
+                for nid in comm
+                if self.ops._node_props.get(
+                    self.ops._id_to_idx.get(nid), {}
+                ).get("tx_class")
+                == "illicit"
+            )
+            community_stats.append({
+                "community_id": i,
+                "size": len(comm),
+                "illicit_count": illicit_count,
+                "illicit_pct": round(illicit_count / len(comm) * 100, 2) if comm else 0,
+            })
 
-        self.conn.execute(
-            f"""
-            MATCH (c:{node_label})
-            SET c.`{column_name}` = 0.0
-            """
-        )
+        return {
+            "modularity": result["modularity"],
+            "num_communities": result["num_communities"],
+            "communities": sorted(
+                community_stats, key=lambda c: c["illicit_pct"], reverse=True
+            ),
+        }
 
-        log.debug("Computing CON scores")
+    def pagerank_analysis(self, top_n: int = 20) -> pd.DataFrame:
+        """Find the most important transactions by PageRank."""
+        scores = self.ops.pagerank()
+        rows = []
+        for node_id, score in scores.items():
+            idx = self.ops._id_to_idx.get(node_id)
+            props = self.ops._node_props.get(idx, {})
+            rows.append({
+                "node_id": node_id,
+                "tx_id": props.get("tx_id"),
+                "tx_class": props.get("tx_class"),
+                "time_step": props.get("time_step"),
+                "pagerank": round(score, 6),
+            })
 
-        self.conn.execute(
-            f"""
-            MATCH (a:{node_label})-[ac:{rel_label}]->(c:{node_label})
-            MATCH (b:{node_label})-[bc:{rel_label}]->(c:{node_label})
-            WHERE a <> b
-            WITH a, b,
-                CASE
-                    WHEN ac.esi < bc.esi
-                    THEN ac.esi
-                    ELSE bc.esi
-                END AS min_esi
-            WITH a, b, sum(min_esi) AS con_pair
-            WITH a, sum(con_pair) AS con_score
-            SET a.`{column_name}` = con_score
-            """
-        )
+        df = pd.DataFrame(rows).sort_values("pagerank", ascending=False)
+        return df.head(top_n).reset_index(drop=True)

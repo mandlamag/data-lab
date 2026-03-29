@@ -1,475 +1,350 @@
+import random
 import shutil
 import tempfile
-from enum import Enum
 from pathlib import Path
-from string import Template
 from typing import Any, Optional
 
-import kuzu
 import numpy as np
 import pandas as pd
 from loguru import logger as log
 from more_itertools import interleave_longest
+from trueno_graph import Graph
 
 from shared.settings import LOCAL_DIR, env
 from shared.storage import Storage, StoragePrefix
 
 
-class KuzuTableType(Enum):
-    NODE = "NODE"
-    REL = "REL"
+class GraphOps:
+    """Graph operations backed by trueno-graph (CSR).
 
+    Loads transaction graph data from lakehouse parquet exports into a
+    high-performance CSR representation. Currently supports btc_txgraph
+    (Elliptic Bitcoin dataset), designed to extend to other blockchains.
+    """
 
-class KuzuOps:
     def __init__(self, schema: str, overwrite: bool = False):
         dbname = env.str(f"{schema.upper()}_GRAPH_DB")
         db_path = Path(LOCAL_DIR) / dbname
 
-        if db_path.exists():
-            if overwrite:
-                log.warning(f"Overwriting database: {db_path}")
-                if db_path.is_dir():
-                    shutil.rmtree(db_path)
-                elif db_path.is_file():
-                    db_path.with_suffix(".wal").unlink(missing_ok=True)
-                    db_path.with_suffix(".lock").unlink(missing_ok=True)
-                    db_path.unlink()
+        if db_path.exists() and overwrite:
+            log.warning(f"Overwriting graph: {db_path}")
+            if db_path.is_dir():
+                shutil.rmtree(db_path)
+            elif db_path.is_file():
+                db_path.unlink()
 
-        db = kuzu.Database(db_path)
-        self.conn = kuzu.Connection(db)
+        self.db_path = db_path
+        self.schema = schema
         self.storage = Storage(prefix=StoragePrefix.EXPORTS)
+        self.graph = Graph()
 
-    def _copy_from_s3(self, s3_path: str, query: str, path_var="path"):
+        # node_id (from parquet) <-> CSR index
+        self._id_to_idx: dict[int, int] = {}
+        self._idx_to_id: dict[int, int] = {}
+
+        # Node properties: CSR index -> {tx_id, tx_class, time_step, ...}
+        self._node_props: dict[int, dict[str, Any]] = {}
+
+        # Embeddings stored separately for k-NN
+        self._embedding_index: dict[int, np.ndarray] = {}
+
+        if db_path.exists() and not overwrite:
+            self._load_from_disk()
+
+    # ── Data loading ─────────────────────────────────────────────────
+
+    def _download_parquet(self, s3_path: str) -> pd.DataFrame:
         with tempfile.NamedTemporaryFile(suffix=".parquet") as tmp:
             self.storage.download_file(s3_path, tmp.name)
-            query = Template(query).substitute({path_var: tmp.name})
-            log.debug("Running query: {}", query)
-            self.conn.execute(query)
+            return pd.read_parquet(tmp.name)
 
-    # Graph: music_taste
-    # ==================
-
-    def _create_music_taste_schema(self):
-        # Nodes
-        # =====
-
-        log.info("Creating music_taste graph schema for User nodes")
-
-        self.conn.execute(
-            """
-            CREATE NODE TABLE User (
-                node_id INT64,
-                user_id STRING,
-                source STRING,
-                country STRING,
-                PRIMARY KEY (node_id)
-            )
-            """
-        )
-
-        log.info("Creating music_taste graph schema for Genre nodes")
-
-        self.conn.execute(
-            """
-            CREATE NODE TABLE Genre (
-                node_id INT64,
-                genre STRING,
-                PRIMARY KEY (node_id)
-            )
-            """
-        )
-
-        log.info("Creating music_taste graph schema for Track nodes")
-
-        self.conn.execute(
-            """
-            CREATE NODE TABLE Track (
-                node_id INT64,
-                track_id STRING,
-                name STRING,
-                artist STRING,
-                year INT16,
-                PRIMARY KEY (node_id)
-            )
-            """
-        )
-
-        # Edges
-        # =====
-
-        log.info("Creating music_taste graph schema for Friend edges")
-        self.conn.execute("CREATE REL TABLE Friend(FROM User TO User, MANY_MANY)")
-
-        log.info("Creating music_taste graph schema for Likes edges")
-        self.conn.execute("CREATE REL TABLE Likes(FROM User TO Genre, MANY_MANY)")
-
-        log.info("Creating music_taste graph schema for ListenedTo edges")
-        self.conn.execute(
-            """
-            CREATE REL TABLE ListenedTo(
-                FROM User TO Track,
-                play_count INT32,
-                MANY_MANY
-            )
-            """
-        )
-
-        log.info("Creating music_taste graph schema for Tagged edges")
-        self.conn.execute("CREATE REL TABLE Tagged(FROM Track TO Genre, MANY_MANY)")
-
-    def _import_music_taste(self, s3_path: str):
-        # Nodes
-        # =====
-
-        log.info("Importing music_taste DSN User nodes")
-
-        self._copy_from_s3(
-            f"{s3_path}/nodes/dsn_nodes_users.parquet",
-            "COPY User(node_id, user_id, country, source) FROM '$path'",
-        )
-
-        log.info("Importing music_taste MSDSL User nodes")
-
-        self._copy_from_s3(
-            f"{s3_path}/nodes/msdsl_nodes_users.parquet",
-            "COPY User(node_id, user_id, source) FROM '$path'",
-        )
-
-        log.info("Importing music_taste MSDSL Track nodes")
-
-        self._copy_from_s3(
-            f"{s3_path}/nodes/msdsl_nodes_tracks.parquet",
-            "COPY Track(node_id, track_id, name, artist, year) FROM '$path'",
-        )
-
-        log.info("Importing music_taste Genre nodes")
-
-        self._copy_from_s3(
-            f"{s3_path}/nodes/nodes_genres.parquet",
-            "COPY Genre(node_id, genre) FROM '$path'",
-        )
-
-        # Edges
-        # =====
-
-        log.info("Importing music_taste DSN user-user friend edges")
-
-        self._copy_from_s3(
-            f"{s3_path}/edges/dsn_edges_friendships.parquet",
-            "COPY Friend FROM '$path'",
-        )
-
-        log.info("Importing music_taste DSN user-genre edges")
-
-        self._copy_from_s3(
-            f"{s3_path}/edges/dsn_edges_user_genres.parquet",
-            "COPY Likes FROM '$path'",
-        )
-
-        log.info("Importing music_taste MSDSL user-tracks edges")
-
-        self._copy_from_s3(
-            f"{s3_path}/edges/msdsl_edges_user_tracks.parquet",
-            "COPY ListenedTo FROM '$path'",
-        )
-
-        log.info("Importing music_taste MSDSL track-genres edges")
-
-        self._copy_from_s3(
-            f"{s3_path}/edges/msdsl_edges_track_tags.parquet",
-            "COPY Tagged FROM '$path'",
-        )
-
-    def load_music_taste(self, path: str):
+    def load_btc_txgraph(self, s3_path: str):
+        """Load Bitcoin transaction graph from lakehouse export."""
         try:
-            self._create_music_taste_schema()
+            self._load_btc_txgraph(s3_path)
+            self._save_to_disk()
         except Exception as e:
-            log.error("Failed to create schema for music_taste: {}", e)
+            log.error("Failed to load btc_txgraph: {}", e)
+
+    def _load_btc_txgraph(self, s3_path: str):
+        log.info("Loading btc_txgraph nodes")
+        nodes_df = self._download_parquet(
+            f"{s3_path}/nodes/nodes_transactions.parquet"
+        )
+
+        for _, row in nodes_df.iterrows():
+            node_id = int(row["node_id"])
+            idx = len(self._id_to_idx)
+            self._id_to_idx[node_id] = idx
+            self._idx_to_id[idx] = node_id
+            self._node_props[idx] = {
+                "node_id": node_id,
+                "tx_id": str(row["tx_id"]),
+                "tx_class": str(row["tx_class"]),
+                "time_step": int(row["time_step"]),
+            }
+            self.graph.set_node_name(idx, str(row["tx_id"]))
+
+        log.info("Loaded {} transaction nodes", len(self._id_to_idx))
+
+        log.info("Loading btc_txgraph edges")
+        edges_df = self._download_parquet(f"{s3_path}/edges/edges_pays.parquet")
+
+        edge_count = 0
+        for _, row in edges_df.iterrows():
+            src_id = int(row["source_id"])
+            dst_id = int(row["target_id"])
+            src_idx = self._id_to_idx.get(src_id)
+            dst_idx = self._id_to_idx.get(dst_id)
+            if src_idx is not None and dst_idx is not None:
+                self.graph.add_edge(src_idx, dst_idx, 1.0)
+                edge_count += 1
+
+        log.info(
+            "Loaded graph: {} nodes, {} edges",
+            self.graph.num_nodes,
+            edge_count,
+        )
+
+    # ── Persistence ──────────────────────────────────────────────────
+
+    def _save_to_disk(self):
+        self.db_path.mkdir(parents=True, exist_ok=True)
+
+        records = []
+        for idx, props in self._node_props.items():
+            record = {**props, "_idx": idx}
+            emb = self._embedding_index.get(idx)
+            if emb is not None:
+                record["embedding"] = emb.tolist()
+            records.append(record)
+
+        if records:
+            pd.DataFrame(records).to_parquet(self.db_path / "nodes.parquet")
+
+        # Save edge list
+        edge_records = []
+        for idx in range(self.graph.num_nodes):
+            for neighbor in self.graph.outgoing_neighbors(idx):
+                edge_records.append({
+                    "src_idx": idx,
+                    "dst_idx": neighbor,
+                    "src_id": self._idx_to_id.get(idx),
+                    "dst_id": self._idx_to_id.get(neighbor),
+                })
+        if edge_records:
+            pd.DataFrame(edge_records).to_parquet(self.db_path / "edges.parquet")
+
+    def _load_from_disk(self):
+        log.info("Loading graph from {}", self.db_path)
+
+        nodes_path = self.db_path / "nodes.parquet"
+        if not nodes_path.exists():
+            log.warning("No nodes.parquet at {}", self.db_path)
             return
 
-        try:
-            self._import_music_taste(path)
-        except Exception as e:
-            log.error("Failed to import nodes/edges for music_taste: {}", e)
-            return
+        nodes_df = pd.read_parquet(nodes_path)
+        for _, row in nodes_df.iterrows():
+            idx = int(row["_idx"])
+            node_id = int(row["node_id"])
+            self._id_to_idx[node_id] = idx
+            self._idx_to_id[idx] = node_id
+            self._node_props[idx] = {
+                "node_id": node_id,
+                "tx_id": str(row.get("tx_id", "")),
+                "tx_class": str(row.get("tx_class", "")),
+                "time_step": int(row.get("time_step", 0)),
+            }
+            self.graph.set_node_name(idx, str(row.get("tx_id", "")))
+            if "embedding" in row and row["embedding"] is not None:
+                self._embedding_index[idx] = np.array(row["embedding"])
 
-    # Graph: econ_comp
-    # ================
+        edges_path = self.db_path / "edges.parquet"
+        if edges_path.exists():
+            edges_df = pd.read_parquet(edges_path)
+            for _, row in edges_df.iterrows():
+                self.graph.add_edge(int(row["src_idx"]), int(row["dst_idx"]), 1.0)
 
-    def _create_econ_comp_schema(self):
-        # Nodes
-        # =====
-
-        log.info("Creating econ_comp graph schema for Country nodes")
-
-        self.conn.execute(
-            """
-            CREATE NODE TABLE Country (
-                node_id INT64,
-                country_id UINT16,
-                country_iso3_code STRING,
-                country_name STRING,
-                country_name_short STRING,
-                in_rankings BOOLEAN,
-                former_country BOOLEAN,
-                PRIMARY KEY (node_id)
-            )
-            """
+        log.info(
+            "Loaded: {} nodes, {} edges",
+            self.graph.num_nodes,
+            self.graph.num_edges,
         )
 
-        log.info("Creating econ_comp graph schema for Product nodes")
-
-        self.conn.execute(
-            """
-            CREATE NODE TABLE Product (
-                node_id INT64,
-                product_id UINT16,
-                product_hs92_code UINT32,
-                product_level UINT8,
-                product_name STRING,
-                product_name_short STRING,
-                product_id_hierarchy STRING,
-                show_feasibility BOOLEAN,
-                natural_resource BOOLEAN,
-                green_product BOOLEAN,
-                PRIMARY KEY (node_id)
-            )
-            """
-        )
-
-        # Edges
-        # =====
-
-        log.info("Creating econ_comp graph schema for CompetesWith edges")
-        self.conn.execute(
-            """
-            CREATE REL TABLE CompetesWith(
-                FROM Country TO Country,
-                esi DOUBLE,
-                MANY_MANY
-            )
-            """
-        )
-
-        log.info("Creating econ_comp graph schema for Exports edges")
-        self.conn.execute(
-            """
-            CREATE REL TABLE Exports(
-                FROM Country TO Product,
-                amount_usd INT128,
-                MANY_MANY
-            )
-            """
-        )
-
-        log.info("Creating econ_comp graph schema for Imports edges")
-        self.conn.execute(
-            """
-            CREATE REL TABLE Imports(
-                FROM Product TO Country,
-                amount_usd INT128,
-                MANY_MANY
-            )
-            """
-        )
-
-    def _import_econ_comp(self, s3_path: str):
-        # Nodes
-        # =====
-
-        log.info("Importing econ_comp Country nodes")
-
-        self._copy_from_s3(
-            f"{s3_path}/nodes/nodes_countries.parquet",
-            """
-            COPY Country(
-                node_id,
-                country_id,
-                country_iso3_code,
-                country_name,
-                country_name_short,
-                in_rankings,
-                former_country
-            ) FROM '$path'
-            """,
-        )
-
-        log.info("Importing econ_comp Product nodes")
-
-        self._copy_from_s3(
-            f"{s3_path}/nodes/nodes_products.parquet",
-            """
-            COPY Product(
-                node_id,
-                product_id,
-                product_hs92_code,
-                product_level,
-                product_name,
-                product_name_short,
-                product_id_hierarchy,
-                show_feasibility,
-                natural_resource,
-                green_product
-            ) FROM '$path'
-            """,
-        )
-
-        # Edges
-        # =====
-
-        log.info("Importing econ_comp country-country CompetesWith edges")
-
-        self._copy_from_s3(
-            f"{s3_path}/edges/edges_competes_with.parquet",
-            "COPY CompetesWith FROM '$path'",
-        )
-
-        log.info("Importing econ_comp country->product Exports edges")
-
-        self._copy_from_s3(
-            f"{s3_path}/edges/edges_exports.parquet",
-            "COPY Exports FROM '$path'",
-        )
-
-        log.info("Importing econ_comp product->country Imports edges")
-
-        self._copy_from_s3(
-            f"{s3_path}/edges/edges_imports.parquet",
-            "COPY Imports FROM '$path'",
-        )
-
-    def load_econ_comp(self, path: str):
-        try:
-            self._create_econ_comp_schema()
-        except Exception as e:
-            log.error("Failed to create schema for econ_comp graph: {}", e)
-            return
-
-        try:
-            self._import_econ_comp(path)
-        except Exception as e:
-            log.error("Failed to import nodes/edges for econ_comp graph: {}", e)
-            return
-
-    # Graph: btc_txgraph
-    # ===================
-
-    def _create_btc_txgraph_schema(self):
-        # Nodes
-        # =====
-
-        log.info("Creating btc_txgraph graph schema for Transaction nodes")
-
-        self.conn.execute(
-            """
-            CREATE NODE TABLE Transaction (
-                node_id INT64,
-                tx_id STRING,
-                tx_class STRING,
-                time_step INT32,
-                PRIMARY KEY (node_id)
-            )
-            """
-        )
-
-        # Edges
-        # =====
-
-        log.info("Creating btc_txgraph graph schema for Pays edges")
-        self.conn.execute(
-            "CREATE REL TABLE Pays(FROM Transaction TO Transaction, MANY_MANY)"
-        )
-
-    def _import_btc_txgraph(self, s3_path: str):
-        # Nodes
-        # =====
-
-        log.info("Importing btc_txgraph Transaction nodes")
-
-        self._copy_from_s3(
-            f"{s3_path}/nodes/nodes_transactions.parquet",
-            "COPY Transaction(node_id, tx_id, tx_class, time_step) FROM '$path'",
-        )
-
-        # Edges
-        # =====
-
-        log.info("Importing btc_txgraph Pays edges")
-
-        self._copy_from_s3(
-            f"{s3_path}/edges/edges_pays.parquet",
-            "COPY Pays FROM '$path'",
-        )
-
-    def load_btc_txgraph(self, path: str):
-        try:
-            self._create_btc_txgraph_schema()
-        except Exception as e:
-            log.error("Failed to create schema for btc_txgraph: {}", e)
-            return
-
-        try:
-            self._import_btc_txgraph(path)
-        except Exception as e:
-            log.error("Failed to import nodes/edges for btc_txgraph: {}", e)
-            return
+    # ── Node queries ─────────────────────────────────────────────────
 
     @property
     def num_nodes(self):
-        if not hasattr(self, "_num_nodes"):
-            log.info("Computing and caching number of nodes")
-            result = self.conn.execute("MATCH () RETURN COUNT(*) AS num_nodes")
-            self._num_nodes = result.get_as_df().num_nodes.iloc[0]
+        return self.graph.num_nodes
 
-        return self._num_nodes
+    def get_node(self, node_id: int) -> Optional[dict[str, Any]]:
+        idx = self._id_to_idx.get(node_id)
+        if idx is None:
+            return None
+        return self._node_props.get(idx)
+
+    def get_node_by_tx_id(self, tx_id: str) -> Optional[dict[str, Any]]:
+        for props in self._node_props.values():
+            if props.get("tx_id") == tx_id:
+                return props
+        return None
 
     def query_node_batch(self, offset: int, limit: int) -> pd.DataFrame:
-        if offset > self.num_nodes:
-            log.info(
-                "Offset reached a value higher than the number of nodes, "
-                "returning an empty DataFrame"
-            )
+        if offset >= self.num_nodes:
             return pd.DataFrame(columns=["node_id"])
+        all_ids = sorted(self._idx_to_id.values())
+        return pd.DataFrame({"node_id": all_ids[offset : offset + limit]})
 
-        result = self.conn.execute(
-            """
-            MATCH (n)
-            RETURN n.node_id AS node_id
-            ORDER BY n.node_id
-            SKIP $skip
-            LIMIT $limit
-            """,
-            parameters=dict(skip=offset, limit=limit),
+    def query_neighbors(self, nodes: pd.DataFrame) -> pd.DataFrame:
+        rows = []
+        for node_id in nodes.node_id:
+            idx = self._id_to_idx.get(int(node_id))
+            if idx is None:
+                continue
+            for neighbor_idx in self.graph.outgoing_neighbors(idx):
+                neighbor_id = self._idx_to_id.get(neighbor_idx)
+                if neighbor_id is not None:
+                    rows.append({"source_id": int(node_id), "target_id": neighbor_id})
+
+        if not rows:
+            return pd.DataFrame(columns=["source_id", "target_id"])
+
+        return (
+            pd.DataFrame(rows)
+            .sort_values(["source_id", "target_id"])
+            .reset_index(drop=True)
         )
 
-        return result.get_as_df()
+    # ── Graph algorithms ─────────────────────────────────────────────
 
-    def query_neighbors(self, nodes: pd.DataFrame):
-        result = self.conn.execute(
-            """
-            MATCH (n)-->(m)
-            WHERE n.node_id IN CAST($nodes AS INT64[])
-            RETURN n.node_id AS source_id, m.node_id AS target_id
-            ORDER BY source_id, target_id
-            """,
-            parameters=dict(nodes=nodes.node_id.to_list()),
+    def bfs(self, node_id: int) -> list[int]:
+        idx = self._id_to_idx.get(node_id)
+        if idx is None:
+            return []
+        return [self._idx_to_id.get(i, i) for i in self.graph.bfs(idx)]
+
+    def pagerank(
+        self, max_iterations: int = 20, tolerance: float = 1e-6
+    ) -> dict[int, float]:
+        scores = self.graph.pagerank(max_iterations, tolerance)
+        return {self._idx_to_id.get(i, i): s for i, s in enumerate(scores)}
+
+    def louvain(self) -> dict:
+        result = self.graph.louvain()
+        result["communities"] = [
+            [self._idx_to_id.get(n, n) for n in comm]
+            for comm in result["communities"]
+        ]
+        return result
+
+    def dijkstra(self, node_id: int) -> dict[int, float]:
+        idx = self._id_to_idx.get(node_id)
+        if idx is None:
+            return {}
+        raw = self.graph.dijkstra(idx)
+        return {self._idx_to_id.get(int(k), int(k)): v for k, v in raw.items()}
+
+    def shortest_path(
+        self, source_id: int, target_id: int
+    ) -> Optional[tuple[float, list[int]]]:
+        src_idx = self._id_to_idx.get(source_id)
+        tgt_idx = self._id_to_idx.get(target_id)
+        if src_idx is None or tgt_idx is None:
+            return None
+        result = self.graph.shortest_path(src_idx, tgt_idx)
+        if result is None:
+            return None
+        dist, path = result
+        return dist, [self._idx_to_id.get(i, i) for i in path]
+
+    def connected_components(self) -> int:
+        return self.graph.connected_components()
+
+    def strongly_connected_components(self) -> list[list[int]]:
+        return [
+            [self._idx_to_id.get(n, n) for n in comp]
+            for comp in self.graph.strongly_connected_components()
+        ]
+
+    def is_cyclic(self) -> bool:
+        return self.graph.is_cyclic()
+
+    # ── Risk analysis (blockchain-specific) ──────────────────────────
+
+    def illicit_neighbors(self, node_id: int) -> list[dict[str, Any]]:
+        """Get neighbors of a node that are classified as illicit."""
+        idx = self._id_to_idx.get(node_id)
+        if idx is None:
+            return []
+        results = []
+        for neighbor_idx in self.graph.outgoing_neighbors(idx):
+            props = self._node_props.get(neighbor_idx, {})
+            if props.get("tx_class") == "illicit":
+                results.append(props)
+        # Also check incoming
+        for neighbor_idx in self.graph.incoming_neighbors(idx):
+            props = self._node_props.get(neighbor_idx, {})
+            if props.get("tx_class") == "illicit":
+                results.append(props)
+        return results
+
+    def risk_score(self, node_id: int) -> float:
+        """Compute risk score: ratio of illicit neighbors to total neighbors."""
+        idx = self._id_to_idx.get(node_id)
+        if idx is None:
+            return 0.0
+        out_neighbors = set(self.graph.outgoing_neighbors(idx))
+        in_neighbors = set(self.graph.incoming_neighbors(idx))
+        all_neighbors = out_neighbors | in_neighbors
+        if not all_neighbors:
+            return 0.0
+        illicit_count = sum(
+            1
+            for n in all_neighbors
+            if self._node_props.get(n, {}).get("tx_class") == "illicit"
+        )
+        return illicit_count / len(all_neighbors)
+
+    def illicit_subgraph(self) -> list[int]:
+        """Get all node_ids in the illicit network (illicit + 1-hop neighbors)."""
+        illicit_indices = {
+            idx
+            for idx, props in self._node_props.items()
+            if props.get("tx_class") == "illicit"
+        }
+        network = set(illicit_indices)
+        for idx in illicit_indices:
+            network.update(self.graph.outgoing_neighbors(idx))
+            network.update(self.graph.incoming_neighbors(idx))
+        return [self._idx_to_id.get(i, i) for i in sorted(network)]
+
+    def high_risk_transactions(self, threshold: float = 0.0) -> pd.DataFrame:
+        """Find non-illicit transactions with high risk scores."""
+        rows = []
+        for idx, props in self._node_props.items():
+            if props.get("tx_class") == "illicit":
+                continue
+            node_id = props["node_id"]
+            score = self.risk_score(node_id)
+            if score > threshold:
+                rows.append({
+                    "node_id": node_id,
+                    "tx_id": props.get("tx_id"),
+                    "tx_class": props.get("tx_class"),
+                    "time_step": props.get("time_step"),
+                    "risk_score": round(score, 4),
+                })
+        if not rows:
+            return pd.DataFrame(
+                columns=["node_id", "tx_id", "tx_class", "time_step", "risk_score"]
+            )
+        return (
+            pd.DataFrame(rows)
+            .sort_values("risk_score", ascending=False)
+            .reset_index(drop=True)
         )
 
-        return result.get_as_df()
-
-    def get_table_names(self, type_: KuzuTableType = KuzuTableType.NODE) -> list[str]:
-        result = self.conn.execute(
-            """
-            CALL show_tables()
-            WHERE type = $type
-            RETURN name AS table_name;
-            """,
-            {"type": type_.value},
-        )
-
-        table_names = result.get_as_df()["table_name"].to_list()
-
-        return table_names
+    # ── Embeddings ───────────────────────────────────────────────────
 
     def update_embeddings(
         self,
@@ -477,97 +352,14 @@ class KuzuOps:
         dim: int,
         column_name: str = "embedding",
     ):
-        node_tables = self.get_table_names(KuzuTableType.NODE)
-
-        for node_table in node_tables:
-            self.conn.execute(
-                f"""
-                ALTER TABLE {node_table}
-                ADD IF NOT EXISTS {column_name} DOUBLE[{dim}]
-                """
-            )
-
-        batch = [dict(nid=nid, e=e) for nid, e in embeddings.items()]
-
-        self.conn.execute(
-            """
-            UNWIND $batch AS batch
-            MATCH (n {node_id: batch.nid})
-            SET n.embedding = batch.e
-            """,
-            parameters=dict(batch=batch),
-        )
+        for node_id, emb in embeddings.items():
+            idx = self._id_to_idx.get(node_id)
+            if idx is not None:
+                self._embedding_index[idx] = np.array(emb)
+        self._save_to_disk()
 
     def reindex_embeddings(self, column_name: str = "embedding"):
-        log.info("Re-indexing embeddings")
-
-        node_tables = self.get_table_names(KuzuTableType.NODE)
-
-        embedding_tables = []
-
-        for node_table in node_tables:
-            result = self.conn.execute(
-                f"""
-                CALL table_info("{node_table}")
-                WHERE name = $column_name
-                RETURN count(*) > 0 AS has_embedding
-                """,
-                dict(column_name=column_name),
-            )
-
-            has_embedding = result.get_as_df()["has_embedding"].iloc[0]
-
-            if has_embedding:
-                embedding_tables.append(node_table)
-
-        log.info(
-            "Node tables with {} column: {}", column_name, ", ".join(embedding_tables)
-        )
-
-        self.conn.execute(
-            """
-            INSTALL vector;
-            LOAD vector;
-            """
-        )
-
-        for node_table in sorted(embedding_tables):
-            index_name = f"{node_table}_{column_name}_idx".lower()
-
-            result = self.conn.execute(
-                f"""
-                CALL show_indexes()
-                WHERE `index name` = $index_name
-                RETURN count(*) > 0 AS index_exists
-                """,
-                dict(index_name=index_name),
-            )
-
-            index_exists = result.get_as_df()["index_exists"].iloc[0]
-
-            if index_exists:
-                log.warning("Dropping existing index {}", index_name)
-
-                self.conn.execute(
-                    f"""
-                    CALL drop_vector_index(
-                        "{node_table}",
-                        "{index_name}"
-                    )
-                    """
-                )
-
-            log.info("Creating index {}", index_name)
-
-            self.conn.execute(
-                f"""
-                CALL create_vector_index(
-                    "{node_table}",
-                    "{index_name}",
-                    "{column_name}"
-                );
-                """
-            )
+        log.info("Embedding index has {} entries", len(self._embedding_index))
 
     def knn(
         self,
@@ -577,90 +369,30 @@ class KuzuOps:
         max_distance: float = 1.0,
         exclude: Optional[list[int]] = None,
     ) -> pd.DataFrame:
-        """
-        Compute k-nearest neighbors, within the given constraints.
+        idx = self._id_to_idx.get(node_id)
+        if idx is None or idx not in self._embedding_index:
+            return pd.DataFrame(columns=["node_id", "distance"])
 
-        Args:
-            node_id: Source node ID for which the k-NN to be computed.
-            column_name: Column name of the node property containing the embeddings.
-                These should be indexed by `reindex_embeddings()`.
-            max_k: Target number of neighbors to retrieve.
-            max_distance: Neighbors above this threshold won't be returned. Since we're
-                using the cosine distance, which ranges between 0 and 2, a value of 1.0
-                here is equivalent to a 50% threshold.
-            exclude: Optional list with node IDs to exclude.
+        query_emb = self._embedding_index[idx]
+        exclude_set = set(exclude or [])
+        exclude_set.add(node_id)
 
-        Returns:
-            Pandas DataFrame with columns table, node_id and distance.
-        """
-
-        log.info(
-            "Retrieving {}-nearest neighbors for node_id={} at a maximum distance of "
-            "{} ∈ [0, 2] and excluding {} nodes",
-            max_k,
-            node_id,
-            max_distance,
-            len(exclude or []),
-        )
-
-        self.conn.execute("LOAD vector")
-
-        node_tables = self.get_table_names(KuzuTableType.NODE)
-
-        result = self.conn.execute(
-            """
-            MATCH (n)
-            WHERE n.node_id = $node_id
-            RETURN n.embedding AS embedding
-            LIMIT 1
-            """,
-            dict(node_id=node_id),
-        )
-
-        node_embedding = result.get_as_df()["embedding"].iloc[0]
-
-        nn_dfs = []
-
-        exclude = exclude or []
-        adj_k = max_k + len(exclude)
-
-        for node_table in node_tables:
-            index_name = f"{node_table}_{column_name}_idx".lower()
-
-            result = self.conn.execute(
-                f"""
-                CALL query_vector_index(
-                    '{node_table}',
-                    '{index_name}',
-                    $node_embedding,
-                    {adj_k}
-                )
-                WHERE distance <= $max_distance
-                    AND NOT node.node_id IN $exclude
-                RETURN node.node_id AS node_id, distance
-                ORDER BY distance
-                LIMIT {max_k};
-                """,
-                dict(
-                    node_embedding=node_embedding,
-                    max_distance=max_distance,
-                    exclude=exclude,
-                ),
+        distances = []
+        for other_idx, other_emb in self._embedding_index.items():
+            other_id = self._idx_to_id[other_idx]
+            if other_id in exclude_set:
+                continue
+            cos_sim = np.dot(query_emb, other_emb) / (
+                np.linalg.norm(query_emb) * np.linalg.norm(other_emb) + 1e-10
             )
+            dist = 1.0 - cos_sim
+            if dist <= max_distance:
+                distances.append({"node_id": other_id, "distance": dist})
 
-            nn_df = result.get_as_df()
-            nn_df["table"] = node_table
+        distances.sort(key=lambda x: x["distance"])
+        return pd.DataFrame(distances[:max_k])
 
-            log.debug(
-                "Found {} nearest neighbor {} nodes for node_id={}",
-                len(nn_df),
-                node_table,
-                node_id,
-            )
-
-            nn_dfs.append(nn_df)
-
-        return pd.concat(nn_dfs)
+    # ── Path operations ──────────────────────────────────────────────
 
     def sample_shortest_paths(
         self,
@@ -671,41 +403,41 @@ class KuzuOps:
         max_length: int,
     ) -> pd.DataFrame:
         log.info(
-            "Computing a sample of size {} of shortest paths between "
-            "{} source nodes and {} target nodes, at distances ranging between "
-            "{} and {} hops",
-            n,
+            "Computing shortest paths: {} sources x {} targets",
             len(source_node_ids),
             len(target_node_ids),
-            min_length,
-            max_length,
         )
 
-        result = self.conn.execute(
-            f"""
-            MATCH p = (a)-[* SHORTEST {min_length}..{max_length}]-(b)
-            WHERE a.node_id IN $source_node_ids
-                AND b.node_id IN $target_node_ids
-            RETURN
-                list_transform(nodes(p), n -> n.node_id) AS nodes,
-                list_transform(rels(p), r -> label(r)) AS rels;
-            """,
-            dict(
-                source_node_ids=source_node_ids,
-                target_node_ids=target_node_ids,
-            ),
-        )
+        paths = []
+        for src_id in source_node_ids:
+            src_idx = self._id_to_idx.get(src_id)
+            if src_idx is None:
+                continue
+            for tgt_id in target_node_ids:
+                tgt_idx = self._id_to_idx.get(tgt_id)
+                if tgt_idx is None:
+                    continue
+                result = self.graph.shortest_path(src_idx, tgt_idx)
+                if result is None:
+                    continue
+                _, idx_path = result
+                hops = len(idx_path) - 1
+                if hops < min_length or hops > max_length:
+                    continue
+                path = [self._idx_to_id.get(i, i) for i in idx_path]
+                # Interleave with "Pays" labels
+                interleaved = []
+                for j, nid in enumerate(path):
+                    interleaved.append(nid)
+                    if j < len(path) - 1:
+                        interleaved.append("Pays")
+                paths.append(interleaved)
 
-        paths_df = result.get_as_df()
-        paths_df = paths_df.sample(n)
-
-        paths_df = (
-            paths_df.apply(lambda row: list(interleave_longest(*row)), axis=1)
-            .rename("paths")
-            .to_frame()
-        )
-
-        return paths_df
+        if not paths:
+            return pd.DataFrame(columns=["paths"])
+        if len(paths) > n:
+            paths = random.sample(paths, n)
+        return pd.DataFrame({"paths": paths})
 
     def random_walk(
         self,
@@ -713,246 +445,81 @@ class KuzuOps:
         n: int,
         min_length: int,
         max_length: int,
-    ) -> list[int]:
-        log.info(
-            "Computing {} random walks starting from node_id={} and ranging between "
-            "{} and {} hops",
-            n,
-            source_node_id,
-            min_length,
-            max_length,
-        )
-
-        def sample_neighbor(
-            source_node_id: int,
-            prev_node_id: Optional[int] = None,
-        ) -> Optional[tuple[str, int]]:
-            result = self.conn.execute(
-                f"""
-                MATCH p = (n)-[r]-(m)
-                WHERE n.node_id = $source_node_id
-                    AND m.node_id <> $prev_node_id
-                RETURN label(r) AS rel, m.node_id AS node;
-                """,
-                dict(
-                    source_node_id=source_node_id,
-                    prev_node_id=prev_node_id or -1,
-                ),
-            )
-
-            neighbors = result.get_as_df()
-
-            if len(neighbors) == 0:
-                return
-
-            next_in_path = neighbors.sample(1).iloc[0]
-
-            return next_in_path.rel, next_in_path.node.item()
+    ) -> pd.DataFrame:
+        src_idx = self._id_to_idx.get(source_node_id)
+        if src_idx is None:
+            return pd.DataFrame(columns=["source_node_id", "paths"])
 
         paths = []
-
         for _ in range(n):
             path = [source_node_id]
-
+            current_idx = src_idx
             rand_len = np.random.randint(min_length, max_length + 1)
+            prev_idx = None
 
-            for i in range(rand_len):
-                next_in_path = sample_neighbor(
-                    path[i * 2],
-                    None if i == 0 else path[i * 2 - 2],
-                )
-
-                if next_in_path is None:
+            for _ in range(rand_len):
+                neighbors = self.graph.outgoing_neighbors(current_idx)
+                if prev_idx is not None:
+                    neighbors = [n for n in neighbors if n != prev_idx]
+                if not neighbors:
                     break
-
-                rel_type, node_id = next_in_path
-                path.append(rel_type)
-                path.append(node_id)
+                next_idx = random.choice(neighbors)
+                path.append("Pays")
+                path.append(self._idx_to_id.get(next_idx, next_idx))
+                prev_idx = current_idx
+                current_idx = next_idx
 
             paths.append(path)
 
-        paths_df = pd.DataFrame(dict(source_node_id=source_node_id, paths=paths))
+        return pd.DataFrame({"source_node_id": source_node_id, "paths": paths})
 
-        return paths_df
+    # ── Description / hydration (for RAG context) ────────────────────
 
-    def node_properties(self, nodes: list[dict[str, Any]]) -> dict[str, Any]:
-        node_tables = self.get_table_names(KuzuTableType.NODE)
-
-        node_props_schema = {}
-
-        for node_table in node_tables:
-            result = self.conn.execute(
-                f"""
-                CALL table_info("{node_table}")
-                RETURN name;
-                """
-            )
-
-            node_props_schema[node_table] = result.get_as_df()["name"].to_list()
-
-        node_props = []
-
-        for node in nodes:
-            node_props.append(
-                {
-                    k: v
-                    for k, v in node.items()
-                    if k in node_props_schema[node["_label"]] + ["_label"]
-                }
-            )
-
-        return node_props
-
-    def rel_properties(self, rels: list[dict[str, Any]]) -> dict[str, Any]:
-        rel_tables = self.get_table_names(KuzuTableType.REL)
-
-        rel_props_schema = {}
-
-        for rel_table in rel_tables:
-            result = self.conn.execute(
-                f"""
-                CALL table_info("{rel_table}")
-                RETURN name;
-                """
-            )
-
-            rel_props_schema[rel_table] = result.get_as_df()["name"].to_list()
-
-        rel_props = []
-
-        for rel in rels:
-            rel_props.append(
-                {
-                    k: v
-                    for k, v in rel.items()
-                    if k in rel_props_schema[rel["_label"]] + ["_label"]
-                }
-            )
-
-        return rel_props
-
-    def node_description(
-        self,
-        node: dict[str, Any],
-        exclude_props: Optional[list[str]] = None,
-    ) -> str:
-        exclude_props = exclude_props or []
-        exclude_props = exclude_props + ["_label", "node_id"]
-
-        label = node["_label"]
-        node_id = node["node_id"]
-
-        props = [f"{k}={v}" for k, v in node.items() if k not in exclude_props]
-        props = "" if len(props) == 0 else ", " + ", ".join(props)
-
-        description = f"{label}(node_id={node_id}{props})"
-
-        return description
-
-    def rel_description(
-        self,
-        source_node: dict[str, Any],
-        rel: dict[str, Any],
-        target_node: dict[str, Any],
-        exclude_props: Optional[list[str]] = None,
-    ) -> str:
-        exclude_props = exclude_props or []
-        exclude_props += ["_label"]
-
-        label = rel["_label"]
-
-        props = [f"{k}={v}" for k, v in rel.items() if k not in exclude_props]
-        props = "" if len(props) == 0 else " {%s}" % ", ".join(props)
-
-        description = (
-            f"({{ node_id: {source_node['node_id']} }})"
-            f"-[:{label}{props}]-"
-            f"({{ node_id: {target_node['node_id']} }})"
+    def node_description(self, node_id: int) -> str:
+        idx = self._id_to_idx.get(node_id)
+        if idx is None:
+            return f"Transaction(node_id={node_id})"
+        props = self._node_props[idx]
+        return (
+            f"Transaction(tx_id={props['tx_id']}, "
+            f"class={props['tx_class']}, "
+            f"time_step={props['time_step']})"
         )
-
-        return description
-
-    def hydrate_path(
-        self,
-        path: list[int | str],
-        exclude_props: Optional[list[str]] = None,
-    ) -> pd.DataFrame:
-        exclude_props = exclude_props or []
-
-        stmt = []
-
-        for i in range(0, len(path), 2):
-            stmt.append("({ node_id: %d })" % path[i])
-
-            if i + 1 < len(path):
-                stmt.append("[:%s]" % path[i + 1])
-
-        result = self.conn.execute(
-            """
-            MATCH p = %s
-            RETURN nodes(p) AS nodes, rels(p) AS rels
-            """
-            % "-".join(stmt)
-        )
-
-        hydrate_df = result.get_as_df()
-
-        if len(hydrate_df) == 0:
-            log.warning("Could not match path: {}", path)
-            return
-
-        return hydrate_df.iloc[0]
 
     def path_descriptions(
         self,
         paths_df: pd.DataFrame,
         exclude_props: Optional[list[str]] = None,
     ) -> str:
-        log.info("Computing node and rel descriptions for {} paths", len(paths_df))
-
-        exclude_props = exclude_props or []
-        hydrate_df = paths_df.apply(lambda row: self.hydrate_path(row.item()), axis=1)
-        hydrate_df = hydrate_df.dropna()
-
-        if len(hydrate_df) == 0:
-            return ""
-
-        hydrate_df.nodes = hydrate_df.nodes.apply(self.node_properties)
-        hydrate_df.rels = hydrate_df.rels.apply(self.rel_properties)
+        log.info("Generating descriptions for {} paths", len(paths_df))
 
         node_descriptions = set()
-
-        for nodes in hydrate_df.nodes:
-            node_descriptions |= set(
-                self.node_description(node, exclude_props=exclude_props)
-                for node in nodes
-            )
-
-        node_descriptions = "\n".join(node_descriptions)
-
         rel_descriptions = set()
 
-        for _, row in hydrate_df.iterrows():
-            path = list(interleave_longest(row.nodes, row.rels))
+        for path in paths_df["paths"]:
+            for i in range(0, len(path), 2):
+                nid = path[i]
+                node_descriptions.add(self.node_description(nid))
+                if i + 2 < len(path):
+                    next_nid = path[i + 2]
+                    rel_descriptions.add(
+                        f"(tx_id={self._node_props.get(self._id_to_idx.get(nid, -1), {}).get('tx_id', nid)})"
+                        f"-[:Pays]->"
+                        f"(tx_id={self._node_props.get(self._id_to_idx.get(next_nid, -1), {}).get('tx_id', next_nid)})"
+                    )
 
-            for i in range(0, len(path) - 1, 2):
-                source_node = path[i]
-                rel = path[i + 1]
-                target_node = path[i + 2]
+        if not node_descriptions:
+            return ""
 
-                description = self.rel_description(
-                    source_node,
-                    rel,
-                    target_node,
-                    exclude_props=exclude_props,
-                )
-
-                rel_descriptions.add(description)
-
-        rel_descriptions = "\n".join(rel_descriptions)
-
-        description = (
-            f"Nodes:\n{node_descriptions}\n\nRelationships:\n{rel_descriptions}"
+        return (
+            f"Nodes:\n{chr(10).join(sorted(node_descriptions))}\n\n"
+            f"Relationships:\n{chr(10).join(sorted(rel_descriptions))}"
         )
 
-        return description
+    def get_schema(self) -> str:
+        return (
+            "Node tables:\n"
+            "  Transaction(node_id, tx_id, tx_class, time_step)\n"
+            "Relationship tables:\n"
+            "  Pays(FROM Transaction TO Transaction)"
+        )
