@@ -121,6 +121,97 @@ def reindex(schema: str):
         log.error(e)
 
 
+@graph.command(help="Export graph data as JSON for the visualization app")
+@click.argument("schema", type=click.STRING)
+@click.option("-n", "--max-nodes", default=500, type=click.INT, help="Max nodes")
+@click.option("-o", "--output", default="graph-viz/public/graph.json", type=click.Path())
+def export_viz(schema: str, max_nodes: int, output: str):
+    import json
+    import random
+
+    ops = GraphOps(schema)
+
+    # BFS from a random illicit node, both directions
+    illicit_ids = [
+        props["node_id"]
+        for props in ops._node_props.values()
+        if props.get("tx_class") == "illicit"
+    ]
+
+    seed = random.choice(illicit_ids)
+    included = {seed}
+    frontier = [seed]
+
+    while len(included) < max_nodes and frontier:
+        next_frontier = []
+        for nid in frontier:
+            idx = ops._id_to_idx.get(nid)
+            if idx is None:
+                continue
+            for n in ops.graph.outgoing_neighbors(idx):
+                neighbor_id = ops._idx_to_id.get(n)
+                if neighbor_id and neighbor_id not in included:
+                    included.add(neighbor_id)
+                    next_frontier.append(neighbor_id)
+                    if len(included) >= max_nodes:
+                        break
+            if len(included) >= max_nodes:
+                break
+            for n in ops.graph.incoming_neighbors(idx):
+                neighbor_id = ops._idx_to_id.get(n)
+                if neighbor_id and neighbor_id not in included:
+                    included.add(neighbor_id)
+                    next_frontier.append(neighbor_id)
+                    if len(included) >= max_nodes:
+                        break
+            if len(included) >= max_nodes:
+                break
+        frontier = next_frontier
+
+    idx_set = {ops._id_to_idx[nid] for nid in included if nid in ops._id_to_idx}
+
+    nodes = []
+    for nid in included:
+        idx = ops._id_to_idx.get(nid)
+        props = ops._node_props.get(idx, {})
+        risk = ops.risk_score(nid)
+        nodes.append({
+            "id": int(nid),
+            "txId": props.get("tx_id", ""),
+            "txClass": props.get("tx_class", "unknown"),
+            "timeStep": int(props.get("time_step", 0)),
+            "riskScore": round(risk, 4),
+        })
+
+    edges = []
+    for idx in idx_set:
+        src_id = int(ops._idx_to_id[idx])
+        for neighbor_idx in ops.graph.outgoing_neighbors(idx):
+            if neighbor_idx in idx_set:
+                edges.append({
+                    "source": src_id,
+                    "target": int(ops._idx_to_id[neighbor_idx]),
+                })
+
+    stats = {
+        "totalNodes": ops.graph.num_nodes,
+        "totalEdges": ops.graph.num_edges,
+        "displayedNodes": len(nodes),
+        "displayedEdges": len(edges),
+        "illicitCount": sum(1 for n in nodes if n["txClass"] == "illicit"),
+        "licitCount": sum(1 for n in nodes if n["txClass"] == "licit"),
+        "unknownCount": sum(1 for n in nodes if n["txClass"] == "unknown"),
+    }
+
+    out = {"nodes": nodes, "links": edges, "stats": stats}
+
+    Path(output).parent.mkdir(parents=True, exist_ok=True)
+    with open(output, "w") as f:
+        json.dump(out, f)
+
+    log.info("Exported {} nodes, {} edges to {}", len(nodes), len(edges), output)
+
+
 @graph.command(help="Visualize a subgraph (illicit network or around a tx_id)")
 @click.argument("schema", type=click.STRING)
 @click.option("--tx-id", type=click.STRING, help="Center visualization on a transaction ID")
