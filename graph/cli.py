@@ -41,6 +41,8 @@ def load(schema: str, overwrite: bool):
         match schema:
             case "btc_txgraph":
                 ops.load_btc_txgraph(s3_path)
+            case "btc_txgraph_v2":
+                ops.load_btc_txgraph_v2(s3_path)
             case _:
                 raise click.UsageError(f"{schema}: graph not supported")
     except Exception as e:

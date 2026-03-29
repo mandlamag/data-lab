@@ -29,11 +29,15 @@ models:
         +schema: dd
       elliptic_bitcoin:
         +schema: ebtc
+      btc_indexed:
+        +schema: btc
     silver:
       +database: silver
       +materialized: table
       elliptic_bitcoin:
         +schema: ebtc
+      btc_indexed:
+        +schema: btc
     marts:
       +materialized: table
       graphs:
@@ -44,9 +48,13 @@ models:
           +schema: econ_comp
         btc_txgraph:
           +schema: btc_txgraph
+        btc_txgraph_v2:
+          +schema: btc_txgraph_v2
       analytics:
         +database: analytics
         the_atlas_of_economic_complexity:
           +schema: taoec
         elliptic_bitcoin:
           +schema: ebtc
+        btc_indexed:
+          +schema: btc

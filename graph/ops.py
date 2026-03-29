@@ -59,12 +59,65 @@ class GraphOps:
             return pd.read_parquet(tmp.name)
 
     def load_btc_txgraph(self, s3_path: str):
-        """Load Bitcoin transaction graph from lakehouse export."""
+        """Load Bitcoin transaction graph from lakehouse export (Elliptic)."""
         try:
             self._load_btc_txgraph(s3_path)
             self._save_to_disk()
         except Exception as e:
             log.error("Failed to load btc_txgraph: {}", e)
+
+    def load_btc_txgraph_v2(self, s3_path: str):
+        """Load Bitcoin address graph from indexed blockchain data."""
+        try:
+            self._load_btc_txgraph_v2(s3_path)
+            self._save_to_disk()
+        except Exception as e:
+            log.error("Failed to load btc_txgraph_v2: {}", e)
+
+    def _load_btc_txgraph_v2(self, s3_path: str):
+        log.info("Loading btc_txgraph_v2 address nodes")
+        nodes_df = self._download_parquet(
+            f"{s3_path}/nodes/nodes_addresses.parquet"
+        )
+
+        for _, row in nodes_df.iterrows():
+            node_id = int(row["node_id"])
+            idx = len(self._id_to_idx)
+            self._id_to_idx[node_id] = idx
+            self._idx_to_id[idx] = node_id
+            self._node_props[idx] = {
+                "node_id": node_id,
+                "address": str(row.get("address", "")),
+                "cluster_id": int(row["cluster_id"]) if pd.notna(row.get("cluster_id")) else None,
+                "cluster_label": str(row.get("cluster_label", "")),
+                "display_label": str(row.get("display_label", "")),
+                "cluster_risk_score": float(row.get("cluster_risk_score", 0)),
+                "is_sanctioned": bool(row.get("is_sanctioned", False)),
+            }
+            label = str(row.get("display_label", "") or row.get("address", ""))
+            self.graph.set_node_name(idx, label)
+
+        log.info("Loaded {} address nodes", len(self._id_to_idx))
+
+        log.info("Loading btc_txgraph_v2 payment edges")
+        edges_df = self._download_parquet(f"{s3_path}/edges/edges_payments.parquet")
+
+        edge_count = 0
+        for _, row in edges_df.iterrows():
+            src_id = int(row["source_id"])
+            dst_id = int(row["target_id"])
+            src_idx = self._id_to_idx.get(src_id)
+            dst_idx = self._id_to_idx.get(dst_id)
+            weight = float(row.get("amount_btc", 1.0))
+            if src_idx is not None and dst_idx is not None:
+                self.graph.add_edge(src_idx, dst_idx, weight)
+                edge_count += 1
+
+        log.info(
+            "Loaded graph: {} nodes, {} edges",
+            self.graph.num_nodes,
+            edge_count,
+        )
 
     def _load_btc_txgraph(self, s3_path: str):
         log.info("Loading btc_txgraph nodes")

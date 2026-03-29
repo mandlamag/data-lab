@@ -307,6 +307,43 @@ btc-txgraph-rag: check-dlctl
 btc-txgraph-all: btc-txgraph-etl btc-txgraph-embeddings btc-txgraph-rag
 
 
+# =============================================
+# Bitcoin Indexed Graph (worker5 + worker7)
+# =============================================
+
+btc-indexed-transform-bronze: check-dlctl
+    dlctl transform -m "+stage.btc_indexed"
+
+btc-indexed-transform-silver: check-dlctl
+    dlctl transform -m "silver.btc_indexed"
+
+btc-indexed-transform-gold: check-dlctl
+    dlctl transform -m "marts.graphs.btc_txgraph_v2" -m "marts.analytics.btc_indexed"
+
+btc-indexed-transform: btc-indexed-transform-bronze btc-indexed-transform-silver btc-indexed-transform-gold
+
+btc-indexed-export: check-dlctl
+    dlctl export dataset graphs "btc_txgraph_v2"
+
+btc-indexed-load: check-dlctl
+    dlctl graph load --overwrite "btc_txgraph_v2"
+
+btc-indexed-tl: btc-indexed-transform btc-indexed-export btc-indexed-load
+
+btc-indexed-embeddings: check-dlctl
+    dlctl graph compute embeddings "btc_txgraph_v2" -d 128 -b 4096 -e 5
+    dlctl graph reindex "btc_txgraph_v2"
+
+btc-indexed-viz: check-dlctl
+    dlctl graph export-viz btc_txgraph_v2 -n 500
+    cd graph-viz && npm run dev
+
+btc-indexed-rag: check-dlctl
+    dlctl graph rag "btc_txgraph_v2" -i
+
+btc-indexed-all: btc-indexed-tl btc-indexed-embeddings btc-indexed-rag
+
+
 # ==============
 # Data Lab Infra
 # ==============
