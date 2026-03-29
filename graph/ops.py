@@ -581,5 +581,9 @@ class GraphOps:
                 if neighbor_idx in idx_set:
                     dst_id = self._idx_to_id[neighbor_idx]
                     G.add_edge(src_id, dst_id, _label="Pays", vis_weight=1.0)
+            for neighbor_idx in self.graph.incoming_neighbors(idx):
+                if neighbor_idx in idx_set:
+                    in_id = self._idx_to_id[neighbor_idx]
+                    G.add_edge(in_id, src_id, _label="Pays", vis_weight=1.0)
 
         return G
