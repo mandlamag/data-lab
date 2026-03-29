@@ -1,4 +1,7 @@
-{{ config(alias='address_clusters') }}
+{{ config(
+    alias='address_clusters',
+    pre_hook="DROP TABLE IF EXISTS {{ this.database }}.{{ this.schema }}.address_clusters__dbt_tmp"
+) }}
 
 SELECT
     address,
