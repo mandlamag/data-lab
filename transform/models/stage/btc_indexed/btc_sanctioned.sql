@@ -1,4 +1,4 @@
-{{ config(alias='sanctioned', materialized='view') }}
+{{ config(alias='sanctioned') }}
 
 SELECT *
 FROM postgres_scan(

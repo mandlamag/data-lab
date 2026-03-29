@@ -1,4 +1,4 @@
-{{ config(alias='kyt_responses', materialized='view') }}
+{{ config(alias='kyt_responses') }}
 
 SELECT
     id,

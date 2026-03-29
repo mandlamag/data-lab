@@ -1,4 +1,4 @@
-{{ config(alias='address_clusters', materialized='view') }}
+{{ config(alias='address_clusters') }}
 
 SELECT
     address,
