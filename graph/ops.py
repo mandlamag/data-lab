@@ -523,3 +523,42 @@ class GraphOps:
             "Relationship tables:\n"
             "  Pays(FROM Transaction TO Transaction)"
         )
+
+    # ── Visualization ────────────────────────────────────────────────
+
+    def to_networkx(self, node_ids: list[int]) -> "nx.DiGraph":
+        """Convert a subset of the graph to a networkx DiGraph for visualization.
+
+        Args:
+            node_ids: List of node_ids to include. Edges between these nodes
+                are included automatically.
+        """
+        import networkx as nx
+
+        G = nx.DiGraph()
+        idx_set = set()
+
+        for node_id in node_ids:
+            idx = self._id_to_idx.get(node_id)
+            if idx is None:
+                continue
+            idx_set.add(idx)
+            props = self._node_props.get(idx, {})
+            G.add_node(
+                node_id,
+                _label="Transaction",
+                node_id=node_id,
+                tx_id=props.get("tx_id", ""),
+                tx_class=props.get("tx_class", ""),
+                time_step=props.get("time_step", 0),
+                label=props.get("tx_id", str(node_id)),
+            )
+
+        for idx in idx_set:
+            src_id = self._idx_to_id[idx]
+            for neighbor_idx in self.graph.outgoing_neighbors(idx):
+                if neighbor_idx in idx_set:
+                    dst_id = self._idx_to_id[neighbor_idx]
+                    G.add_edge(src_id, dst_id, _label="Pays", vis_weight=1.0)
+
+        return G

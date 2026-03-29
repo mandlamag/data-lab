@@ -120,6 +120,67 @@ def reindex(schema: str):
         log.error(e)
 
 
+@graph.command(help="Visualize a subgraph (illicit network or around a tx_id)")
+@click.argument("schema", type=click.STRING)
+@click.option("--tx-id", type=click.STRING, help="Center visualization on a transaction ID")
+@click.option("--illicit", is_flag=True, help="Show the illicit subgraph (sampled)")
+@click.option("--high-risk", is_flag=True, help="Show high-risk transactions and their neighbors")
+@click.option("-n", "--max-nodes", default=100, type=click.INT, help="Max nodes to display")
+def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes: int):
+    import random
+
+    from graph.visualization import plot
+
+    ops = GraphOps(schema)
+
+    if tx_id:
+        node = ops.get_node_by_tx_id(tx_id)
+        if node is None:
+            log.error("Transaction {} not found", tx_id)
+            return
+        center_id = node["node_id"]
+        reachable = ops.bfs(center_id)
+        node_ids = reachable[:max_nodes]
+    elif illicit:
+        node_ids = ops.illicit_subgraph()
+        if len(node_ids) > max_nodes:
+            node_ids = random.sample(node_ids, max_nodes)
+    elif high_risk:
+        risk_df = ops.high_risk_transactions(threshold=0.5)
+        seed_ids = risk_df["node_id"].head(max_nodes // 3).tolist()
+        node_ids = set(seed_ids)
+        for nid in seed_ids:
+            idx = ops._id_to_idx.get(nid)
+            if idx is None:
+                continue
+            for n in ops.graph.outgoing_neighbors(idx):
+                node_ids.add(ops._idx_to_id.get(n, n))
+            for n in ops.graph.incoming_neighbors(idx):
+                node_ids.add(ops._idx_to_id.get(n, n))
+        node_ids = list(node_ids)[:max_nodes]
+    else:
+        log.error("Specify --tx-id, --illicit, or --high-risk")
+        return
+
+    G = ops.to_networkx(node_ids)
+    log.info("Visualizing {} nodes, {} edges", G.number_of_nodes(), G.number_of_edges())
+
+    illicit_ids = [
+        nid for nid, data in G.nodes(data=True) if data.get("tx_class") == "illicit"
+    ]
+    licit_ids = [
+        nid for nid, data in G.nodes(data=True) if data.get("tx_class") == "licit"
+    ]
+
+    plot(
+        G,
+        name_prop="tx_id",
+        node_classes={"illicit": illicit_ids, "licit": licit_ids},
+        scale=0.5,
+        font_size=6,
+    )
+
+
 @graph.command(help="Run GraphRAG pipeline on Bitcoin transaction graph")
 @click.argument("schema", type=click.STRING)
 @click.option("-i", "--interactive", is_flag=True, help="Interactive REPL mode")
