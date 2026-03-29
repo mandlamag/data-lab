@@ -144,26 +144,47 @@ class GraphOps:
             return
 
         nodes_df = pd.read_parquet(nodes_path)
-        for _, row in nodes_df.iterrows():
-            idx = int(row["_idx"])
-            node_id = int(row["node_id"])
-            self._id_to_idx[node_id] = idx
-            self._idx_to_id[idx] = node_id
-            self._node_props[idx] = {
-                "node_id": node_id,
-                "tx_id": str(row.get("tx_id", "")),
-                "tx_class": str(row.get("tx_class", "")),
-                "time_step": int(row.get("time_step", 0)),
-            }
-            self.graph.set_node_name(idx, str(row.get("tx_id", "")))
-            if "embedding" in row and row["embedding"] is not None:
-                self._embedding_index[idx] = np.array(row["embedding"])
 
+        # Vectorized mapping construction
+        idxs = nodes_df["_idx"].astype(int).values
+        node_ids = nodes_df["node_id"].astype(int).values
+        tx_ids = nodes_df["tx_id"].astype(str).values
+        tx_classes = nodes_df["tx_class"].astype(str).values
+        time_steps = nodes_df["time_step"].astype(int).values
+
+        self._id_to_idx = dict(zip(node_ids, idxs))
+        self._idx_to_id = dict(zip(idxs, node_ids))
+
+        for i in range(len(idxs)):
+            idx = int(idxs[i])
+            self._node_props[idx] = {
+                "node_id": int(node_ids[i]),
+                "tx_id": tx_ids[i],
+                "tx_class": tx_classes[i],
+                "time_step": int(time_steps[i]),
+            }
+            self.graph.set_node_name(idx, tx_ids[i])
+
+        if "embedding" in nodes_df.columns:
+            emb_mask = nodes_df["embedding"].notna()
+            for i in nodes_df[emb_mask].index:
+                self._embedding_index[int(idxs[i])] = np.array(
+                    nodes_df.at[i, "embedding"]
+                )
+
+        # Vectorized edge loading
         edges_path = self.db_path / "edges.parquet"
         if edges_path.exists():
             edges_df = pd.read_parquet(edges_path)
-            for _, row in edges_df.iterrows():
-                self.graph.add_edge(int(row["src_idx"]), int(row["dst_idx"]), 1.0)
+            src = edges_df["src_idx"].astype(int).values
+            dst = edges_df["dst_idx"].astype(int).values
+            edges = [(int(src[i]), int(dst[i]), 1.0) for i in range(len(src))]
+            self.graph = Graph.from_edges(edges)
+            # Re-set node names after rebuilding graph
+            for idx in self._idx_to_id:
+                tx_id = self._node_props.get(idx, {}).get("tx_id", "")
+                if tx_id:
+                    self.graph.set_node_name(idx, tx_id)
 
         log.info(
             "Loaded: {} nodes, {} edges",

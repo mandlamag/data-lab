@@ -142,9 +142,37 @@ def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes
         reachable = ops.bfs(center_id)
         node_ids = reachable[:max_nodes]
     elif illicit:
-        node_ids = ops.illicit_subgraph()
-        if len(node_ids) > max_nodes:
-            node_ids = random.sample(node_ids, max_nodes)
+        # Pick a random illicit node and BFS from it to get a connected subgraph
+        illicit_ids = [
+            props["node_id"]
+            for props in ops._node_props.values()
+            if props.get("tx_class") == "illicit"
+        ]
+        if not illicit_ids:
+            log.error("No illicit transactions found")
+            return
+        seed = random.choice(illicit_ids)
+        reachable = ops.bfs(seed)
+        # Prioritize illicit nodes and their direct neighbors
+        illicit_set = set(illicit_ids)
+        node_ids = [n for n in reachable if n in illicit_set][:max_nodes]
+        # Fill remaining with neighbors of included illicit nodes
+        remaining = max_nodes - len(node_ids)
+        included = set(node_ids)
+        for nid in list(node_ids):
+            if remaining <= 0:
+                break
+            idx = ops._id_to_idx.get(nid)
+            if idx is None:
+                continue
+            for n in ops.graph.outgoing_neighbors(idx):
+                neighbor_id = ops._idx_to_id.get(n)
+                if neighbor_id and neighbor_id not in included:
+                    node_ids.append(neighbor_id)
+                    included.add(neighbor_id)
+                    remaining -= 1
+                    if remaining <= 0:
+                        break
     elif high_risk:
         risk_df = ops.high_risk_transactions(threshold=0.5)
         seed_ids = risk_df["node_id"].head(max_nodes // 3).tolist()
