@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -212,24 +213,84 @@ def visualize(schema: str, tx_id: str, illicit: bool, high_risk: bool, max_nodes
         nid for nid, data in G.nodes(data=True) if data.get("tx_class") == "licit"
     ]
 
-    import matplotlib
-    if output:
+    if output and output.endswith(".png"):
+        import matplotlib
         matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+        import matplotlib.pyplot as plt
 
-    plot(
-        G,
-        name_prop="tx_id",
-        node_classes={"illicit": illicit_ids, "licit": licit_ids},
-        scale=0.5,
-        font_size=6,
-    )
-
-    if output:
+        plot(
+            G,
+            name_prop="tx_id",
+            node_classes={"illicit": illicit_ids, "licit": licit_ids},
+            scale=0.5,
+            font_size=6,
+        )
         plt.savefig(output, bbox_inches="tight", facecolor="white")
         log.info("Saved to {}", output)
     else:
-        plt.show()
+        from pyvis.network import Network
+
+        output_path = output or "graph.html"
+
+        net = Network(
+            height="100vh",
+            width="100%",
+            directed=True,
+            bgcolor="#1a1a2e",
+            font_color="white",
+            select_menu=True,
+            filter_menu=True,
+        )
+
+        color_map = {"illicit": "#e74c3c", "licit": "#2ecc71", "unknown": "#95a5a6"}
+
+        for nid, data in G.nodes(data=True):
+            tx_class = data.get("tx_class", "unknown")
+            color = color_map.get(tx_class, "#95a5a6")
+            border = "#ff0000" if tx_class == "illicit" else "#333333"
+            net.add_node(
+                nid,
+                label=data.get("tx_id", str(nid)),
+                title=(
+                    f"<b>tx_id:</b> {data.get('tx_id', '')}<br>"
+                    f"<b>class:</b> {tx_class}<br>"
+                    f"<b>time_step:</b> {data.get('time_step', '')}<br>"
+                    f"<b>node_id:</b> {nid}"
+                ),
+                color={"background": color, "border": border},
+                size=20 if tx_class == "illicit" else 12,
+                borderWidth=3 if tx_class == "illicit" else 1,
+            )
+
+        for src, dst, data in G.edges(data=True):
+            net.add_edge(src, dst, color="#4a4a6a", arrows="to")
+
+        net.set_options("""
+        {
+            "physics": {
+                "forceAtlas2Based": {
+                    "gravitationalConstant": -50,
+                    "centralGravity": 0.01,
+                    "springLength": 100,
+                    "springConstant": 0.08
+                },
+                "solver": "forceAtlas2Based",
+                "stabilization": {"iterations": 150}
+            },
+            "interaction": {
+                "hover": true,
+                "tooltipDelay": 100,
+                "zoomView": true,
+                "navigationButtons": true
+            }
+        }
+        """)
+
+        net.save_graph(output_path)
+        log.info("Saved interactive graph to {}", output_path)
+
+        import webbrowser
+        webbrowser.open(f"file://{Path(output_path).resolve()}")
 
 
 @graph.command(help="Run GraphRAG pipeline on Bitcoin transaction graph")
