@@ -1,18 +1,13 @@
 {{ config(alias='vins') }}
 
-SELECT
-    hash,
-    idx,
-    vin,
-    blockheight,
-    txid,
-    vout,
-    address,
-    amount,
-    label
-FROM postgres_scan(
+SELECT *
+FROM postgres_query(
     {{ btc_db_conn() }},
-    'public',
-    'vins'
+    '
+    SELECT hash, idx, vin, blockheight, txid, vout, address, amount, label
+    FROM vins
+    WHERE label IS NOT NULL AND label != ''''
+    ORDER BY blockheight DESC
+    LIMIT 500000
+    '
 )
-WHERE label IS NOT NULL AND label != ''

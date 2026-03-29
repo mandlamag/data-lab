@@ -1,24 +1,17 @@
 {{ config(alias='vouts') }}
 
-SELECT
-    hash,
-    idx,
-    vout,
-    blockheight,
-    address,
-    amount,
-    label
-FROM postgres_scan(
+SELECT *
+FROM postgres_query(
     {{ btc_db_conn() }},
-    'public',
-    'vouts'
-)
-WHERE address IN (
-    SELECT address
-    FROM postgres_scan(
-        {{ labels_db_conn() }},
-        'clustering',
-        'address_clusters'
+    '
+    SELECT hash, idx, vout, blockheight, address, amount, label
+    FROM vouts
+    WHERE address IN (
+        SELECT DISTINCT address
+        FROM vouts
+        WHERE label IS NOT NULL AND label != ''''
+        LIMIT 100000
     )
-    WHERE cluster_label IS NOT NULL
+    LIMIT 500000
+    '
 )
